@@ -1,0 +1,893 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>UPI Guard — Merchant Terminal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&family=JetBrains+Mono:wght@400;700&family=Tiro+Devanagari+Hindi&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+<style>
+  :root {
+    --ink: #0a0a0a;
+    --paper: #f5f0e8;
+    --saffron: #ff6b00;
+    --green: #00b359;
+    --red: #e01020;
+    --dim: #888;
+    --card: #fff;
+    --border: #ddd;
+    --success-bg: #00b359;
+    --fail-bg: #e01020;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Rajdhani', sans-serif;
+    background: var(--paper);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    overflow-x: hidden;
+  }
+
+  /* ── HEADER ── */
+  header {
+    width: 100%;
+    background: var(--ink);
+    color: white;
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .logo-mark {
+    width: 36px; height: 36px;
+    background: var(--saffron);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; font-weight: 700;
+    color: white;
+    flex-shrink: 0;
+  }
+
+  .logo-text {
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: 1px;
+  }
+
+  .logo-text span { color: var(--saffron); }
+
+  .status-dot {
+    margin-left: auto;
+    display: flex; align-items: center; gap: 6px;
+    font-size: 13px; color: #aaa;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #555;
+  }
+  .dot.connected { background: var(--green); box-shadow: 0 0 6px var(--green); }
+
+  /* ── MAIN CONTAINER ── */
+  .container {
+    width: 100%;
+    max-width: 480px;
+    padding: 24px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  /* ── SCREEN STATES ── */
+  .screen { display: none; }
+  .screen.active { display: flex; flex-direction: column; gap: 16px; }
+
+  /* ── CARD ── */
+  .card {
+    background: var(--card);
+    border: 1.5px solid var(--border);
+    border-radius: 16px;
+    padding: 24px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+  }
+
+  .card-title {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin-bottom: 16px;
+  }
+
+  /* ── AMOUNT INPUT ── */
+  .amount-display {
+    background: var(--ink);
+    border-radius: 12px;
+    padding: 20px 24px;
+    text-align: right;
+    margin-bottom: 20px;
+    min-height: 80px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+  }
+
+  .currency-symbol {
+    font-size: 28px;
+    color: var(--saffron);
+    font-weight: 700;
+    margin-right: 4px;
+    line-height: 1;
+  }
+
+  .amount-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 48px;
+    font-weight: 700;
+    color: white;
+    line-height: 1;
+    letter-spacing: -2px;
+  }
+
+  .amount-value.placeholder { color: #444; font-size: 36px; }
+
+  /* ── NUMPAD ── */
+  .numpad {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+  }
+
+  .key {
+    background: white;
+    border: 1.5px solid #e0e0e0;
+    border-radius: 12px;
+    padding: 18px 8px;
+    font-size: 24px;
+    font-weight: 600;
+    font-family: 'Rajdhani', sans-serif;
+    cursor: pointer;
+    transition: all 0.12s;
+    text-align: center;
+    color: var(--ink);
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .key:active, .key.pressed {
+    background: var(--ink);
+    color: white;
+    border-color: var(--ink);
+    transform: scale(0.96);
+  }
+
+  .key.zero { grid-column: span 1; }
+  .key.dot-key { background: #f9f9f9; color: var(--dim); }
+  .key.backspace { background: #fff5f0; border-color: #ffd0b0; color: var(--saffron); font-size: 20px; }
+
+  /* ── GENERATE BUTTON ── */
+  .btn-generate {
+    background: var(--saffron);
+    color: white;
+    border: none;
+    border-radius: 14px;
+    padding: 18px;
+    font-size: 18px;
+    font-weight: 700;
+    font-family: 'Rajdhani', sans-serif;
+    letter-spacing: 1px;
+    cursor: pointer;
+    width: 100%;
+    transition: all 0.15s;
+    text-transform: uppercase;
+  }
+
+  .btn-generate:hover { background: #e55a00; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(255,107,0,0.3); }
+  .btn-generate:active { transform: translateY(0); }
+  .btn-generate:disabled { background: #ccc; cursor: not-allowed; transform: none; box-shadow: none; }
+
+  /* ── QR SCREEN ── */
+  .qr-wrapper {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+  }
+
+  .qr-amount-badge {
+    background: var(--ink);
+    color: white;
+    border-radius: 50px;
+    padding: 10px 28px;
+    font-size: 28px;
+    font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: 1px;
+  }
+
+  .qr-amount-badge .rs { color: var(--saffron); }
+
+  .qr-image-container {
+    position: relative;
+    border: 3px solid var(--ink);
+    border-radius: 20px;
+    padding: 16px;
+    background: white;
+  }
+
+  .qr-image-container img {
+    width: 240px;
+    height: 240px;
+    display: block;
+  }
+
+  .qr-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(255,255,255,0.92);
+    border-radius: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    color: var(--dim);
+    display: none;
+  }
+
+  .waiting-indicator {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--dim);
+    font-size: 15px;
+  }
+
+  .pulse-ring {
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--saffron);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.5); opacity: 0.5; }
+  }
+
+  .timer-bar-wrapper {
+    width: 100%;
+    background: #eee;
+    border-radius: 4px;
+    height: 4px;
+    overflow: hidden;
+  }
+
+  .timer-bar {
+    height: 100%;
+    background: var(--saffron);
+    border-radius: 4px;
+    width: 100%;
+    transition: width 1s linear;
+  }
+
+  .timer-label {
+    font-size: 13px;
+    color: var(--dim);
+    font-family: 'JetBrains Mono', monospace;
+    text-align: center;
+  }
+
+  .btn-cancel {
+    background: transparent;
+    border: 1.5px solid #ddd;
+    border-radius: 10px;
+    padding: 12px;
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 15px;
+    color: var(--dim);
+    cursor: pointer;
+    width: 100%;
+    transition: all 0.15s;
+  }
+  .btn-cancel:hover { border-color: #999; color: var(--ink); }
+
+  /* ── DEMO CONTROLS ── */
+  .demo-box {
+    background: #fffbf0;
+    border: 1.5px dashed #f0c040;
+    border-radius: 12px;
+    padding: 16px;
+  }
+
+  .demo-box .demo-title {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: #c09000;
+    margin-bottom: 12px;
+  }
+
+  .demo-buttons {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .btn-demo {
+    padding: 12px;
+    border-radius: 8px;
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    transition: all 0.12s;
+  }
+
+  .btn-demo.success { background: #e8fff2; color: var(--green); border: 1.5px solid var(--green); }
+  .btn-demo.fraud { background: #fff0f0; color: var(--red); border: 1.5px solid var(--red); }
+  .btn-demo:hover { transform: translateY(-1px); }
+
+  /* ── RESULT SCREEN ── */
+  #screen-result {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 24px;
+    padding: 32px;
+  }
+
+  #screen-result.active {
+    display: flex;
+  }
+
+  #screen-result.success-state {
+    background: var(--green);
+    animation: flashGreen 0.3s ease;
+  }
+
+  #screen-result.fail-state {
+    background: var(--red);
+    animation: flashRed 0.4s ease;
+  }
+
+  @keyframes flashGreen {
+    0% { background: white; }
+    100% { background: var(--green); }
+  }
+
+  @keyframes flashRed {
+    0%, 50% { background: white; }
+    25%, 75% { background: var(--red); }
+    100% { background: var(--red); }
+  }
+
+  .result-icon {
+    font-size: 96px;
+    line-height: 1;
+    animation: iconPop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+
+  @keyframes iconPop {
+    0% { transform: scale(0); opacity: 0; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+
+  .result-amount {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 56px;
+    font-weight: 700;
+    color: white;
+    letter-spacing: -2px;
+    line-height: 1;
+  }
+
+  .result-label {
+    font-size: 22px;
+    font-weight: 600;
+    color: rgba(255,255,255,0.85);
+    text-align: center;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+
+  .result-detail {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px;
+    color: rgba(255,255,255,0.65);
+    text-align: center;
+    padding: 12px 20px;
+    background: rgba(0,0,0,0.15);
+    border-radius: 8px;
+  }
+
+  .result-auto-reset {
+    font-size: 14px;
+    color: rgba(255,255,255,0.5);
+  }
+
+  /* ── MERCHANT INFO BAR ── */
+  .merchant-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: white;
+    border: 1.5px solid var(--border);
+    border-radius: 12px;
+    padding: 12px 16px;
+  }
+
+  .merchant-avatar {
+    width: 36px; height: 36px;
+    background: var(--ink);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--saffron);
+    font-weight: 700;
+    font-size: 16px;
+  }
+
+  .merchant-info { flex: 1; }
+  .merchant-name { font-size: 15px; font-weight: 700; color: var(--ink); }
+  .merchant-vpa { font-size: 12px; color: var(--dim); font-family: 'JetBrains Mono', monospace; }
+
+  .connection-badge {
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    padding: 4px 10px;
+    border-radius: 20px;
+    background: #f0f0f0;
+    color: var(--dim);
+  }
+  .connection-badge.live { background: #e8fff2; color: var(--green); }
+
+  /* ── LOADING SPINNER ── */
+  .spinner {
+    display: inline-block;
+    width: 20px; height: 20px;
+    border: 2.5px solid rgba(255,255,255,0.3);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    margin-right: 8px;
+    vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header>
+  <div class="logo-mark">U</div>
+  <div class="logo-text">UPI<span>Guard</span></div>
+  <div class="status-dot">
+    <div class="dot" id="conn-dot"></div>
+    <span id="conn-label">Connecting</span>
+  </div>
+</header>
+
+<!-- MAIN CONTENT -->
+<div class="container">
+
+  <!-- Merchant Info Bar -->
+  <div class="merchant-bar">
+    <div class="merchant-avatar" id="merchant-avatar">S</div>
+    <div class="merchant-info">
+      <div class="merchant-name" id="merchant-name-display">Sharma Kirana Store</div>
+      <div class="merchant-vpa">sharma@okaxis</div>
+    </div>
+    <div class="connection-badge" id="conn-badge">Offline</div>
+  </div>
+
+  <!-- SCREEN 1: Enter Amount -->
+  <div class="screen active" id="screen-amount">
+
+    <div class="card">
+      <div class="card-title">Bill Amount</div>
+      <div class="amount-display">
+        <span class="currency-symbol">₹</span>
+        <span class="amount-value placeholder" id="amount-display">0</span>
+      </div>
+      <div class="numpad" id="numpad">
+        <button class="key" data-val="1">1</button>
+        <button class="key" data-val="2">2</button>
+        <button class="key" data-val="3">3</button>
+        <button class="key" data-val="4">4</button>
+        <button class="key" data-val="5">5</button>
+        <button class="key" data-val="6">6</button>
+        <button class="key" data-val="7">7</button>
+        <button class="key" data-val="8">8</button>
+        <button class="key" data-val="9">9</button>
+        <button class="key dot-key" data-val=".">.</button>
+        <button class="key zero" data-val="0">0</button>
+        <button class="key backspace" data-val="back">⌫</button>
+      </div>
+    </div>
+
+    <button class="btn-generate" id="btn-generate" disabled>
+      Generate QR Code
+    </button>
+
+  </div>
+
+  <!-- SCREEN 2: QR Display + Waiting -->
+  <div class="screen" id="screen-qr">
+
+    <div class="card">
+      <div class="qr-wrapper">
+
+        <div class="qr-amount-badge">
+          <span class="rs">₹</span><span id="qr-amount-label">0</span>
+        </div>
+
+        <div class="qr-image-container">
+          <img id="qr-image" src="" alt="UPI QR Code">
+        </div>
+
+        <div class="waiting-indicator">
+          <div class="pulse-ring"></div>
+          <span>Waiting for payment...</span>
+        </div>
+
+        <div style="width:100%">
+          <div class="timer-bar-wrapper">
+            <div class="timer-bar" id="timer-bar"></div>
+          </div>
+          <div class="timer-label" id="timer-label">Expires in 5:00</div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Demo Controls (shown only in demo mode) -->
+    <div class="demo-box" id="demo-controls" style="display:none;">
+      <div class="demo-title">🧪 Demo — Simulate Payment</div>
+      <div class="demo-buttons">
+        <button class="btn-demo success" id="btn-demo-success">✓ Pay Correct Amount</button>
+        <button class="btn-demo fraud" id="btn-demo-fraud">✗ Pay ₹1 (Fraud)</button>
+      </div>
+    </div>
+
+    <button class="btn-cancel" id="btn-cancel">Cancel & Start Over</button>
+
+  </div>
+
+</div>
+
+<!-- SCREEN 3: Result (Full Screen Overlay) -->
+<div id="screen-result">
+  <div class="result-icon" id="result-icon">✓</div>
+  <div class="result-amount" id="result-amount">₹450</div>
+  <div class="result-label" id="result-label">Payment Confirmed</div>
+  <div class="result-detail" id="result-detail">Transaction ID: TXN123456</div>
+  <div class="result-auto-reset" id="result-countdown">Resetting in 5s...</div>
+</div>
+
+<script>
+// ─────────────────────────────────────────────
+// STATE
+// ─────────────────────────────────────────────
+const MERCHANT_ID = 'merchant_' + Math.random().toString(36).substr(2, 8);
+const MERCHANT_NAME = 'Sharma Kirana Store';
+
+let amountStr = '';
+let currentQrId = null;
+let currentAmount = 0;
+let timerInterval = null;
+let isDemoMode = false;
+let resetTimeout = null;
+
+// ─────────────────────────────────────────────
+// WEBSOCKET
+// ─────────────────────────────────────────────
+const socket = io();
+
+socket.on('connect', () => {
+  socket.emit('join', { merchant_id: MERCHANT_ID });
+  updateConnectionUI(true);
+});
+
+socket.on('disconnect', () => updateConnectionUI(false));
+
+socket.on('payment_result', (data) => {
+  handlePaymentResult(data);
+});
+
+function updateConnectionUI(connected) {
+  document.getElementById('conn-dot').className = 'dot' + (connected ? ' connected' : '');
+  document.getElementById('conn-label').textContent = connected ? 'Live' : 'Offline';
+  document.getElementById('conn-badge').textContent = connected ? 'Live' : 'Offline';
+  document.getElementById('conn-badge').className = 'connection-badge' + (connected ? ' live' : '');
+}
+
+// ─────────────────────────────────────────────
+// NUMPAD
+// ─────────────────────────────────────────────
+document.getElementById('numpad').addEventListener('click', (e) => {
+  const key = e.target.closest('.key');
+  if (!key) return;
+
+  const val = key.dataset.val;
+
+  // Key press animation
+  key.classList.add('pressed');
+  setTimeout(() => key.classList.remove('pressed'), 120);
+
+  if (val === 'back') {
+    amountStr = amountStr.slice(0, -1);
+  } else if (val === '.') {
+    if (!amountStr.includes('.')) {
+      amountStr += amountStr === '' ? '0.' : '.';
+    }
+  } else {
+    // Limit to 7 digits before decimal
+    const parts = amountStr.split('.');
+    if (parts[0].length >= 6 && !amountStr.includes('.')) return;
+    // Limit to 2 decimal places
+    if (parts[1] !== undefined && parts[1].length >= 2) return;
+    amountStr += val;
+  }
+
+  updateAmountDisplay();
+});
+
+function updateAmountDisplay() {
+  const display = document.getElementById('amount-display');
+  const btn = document.getElementById('btn-generate');
+
+  if (amountStr === '' || amountStr === '0' || parseFloat(amountStr) === 0) {
+    display.textContent = '0';
+    display.className = 'amount-value placeholder';
+    btn.disabled = true;
+  } else {
+    display.textContent = amountStr;
+    display.className = 'amount-value';
+    btn.disabled = false;
+  }
+}
+
+// ─────────────────────────────────────────────
+// GENERATE QR
+// ─────────────────────────────────────────────
+document.getElementById('btn-generate').addEventListener('click', async () => {
+  const amount = parseFloat(amountStr);
+  if (!amount || amount <= 0) return;
+
+  const btn = document.getElementById('btn-generate');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Generating...';
+
+  try {
+    const res = await fetch('/api/create-qr', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        amount: amount,
+        merchant_id: MERCHANT_ID,
+        merchant_name: MERCHANT_NAME
+      })
+    });
+
+    const data = await res.json();
+
+    if (data.success) {
+      currentQrId = data.qr_id;
+      currentAmount = amount;
+      isDemoMode = data.demo_mode || false;
+
+      // Set QR image
+      const img = document.getElementById('qr-image');
+      if (data.image_b64) {
+        img.src = data.image_b64;
+      } else if (data.image_url) {
+        img.src = data.image_url;
+      }
+
+      // Set amount label
+      document.getElementById('qr-amount-label').textContent = amount.toLocaleString('en-IN');
+
+      // Show demo controls if in demo mode
+      document.getElementById('demo-controls').style.display = isDemoMode ? 'block' : 'none';
+
+      // Set up demo buttons
+      document.getElementById('btn-demo-success').textContent = `✓ Pay ₹${amount} (Correct)`;
+      document.getElementById('btn-demo-fraud').textContent = `✗ Pay ₹1 (Fraud)`;
+
+      // Switch screen
+      showScreen('screen-qr');
+
+      // Start timer (5 minutes)
+      startTimer(data.expires_in || 300);
+    }
+  } catch (err) {
+    console.error(err);
+  }
+
+  btn.disabled = false;
+  btn.innerHTML = 'Generate QR Code';
+});
+
+// ─────────────────────────────────────────────
+// DEMO SIMULATE
+// ─────────────────────────────────────────────
+document.getElementById('btn-demo-success').addEventListener('click', async () => {
+  await simulatePayment(currentAmount);
+});
+
+document.getElementById('btn-demo-fraud').addEventListener('click', async () => {
+  await simulatePayment(1);
+});
+
+async function simulatePayment(amount) {
+  const res = await fetch('/api/simulate-payment', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ qr_id: currentQrId, amount })
+  });
+  // Result comes via WebSocket, not this response
+}
+
+// ─────────────────────────────────────────────
+// PAYMENT RESULT HANDLER
+// ─────────────────────────────────────────────
+function handlePaymentResult(data) {
+  clearInterval(timerInterval);
+
+  const resultScreen = document.getElementById('screen-result');
+  const icon = document.getElementById('result-icon');
+  const amountEl = document.getElementById('result-amount');
+  const label = document.getElementById('result-label');
+  const detail = document.getElementById('result-detail');
+  const countdown = document.getElementById('result-countdown');
+
+  if (data.status === 'SUCCESS') {
+    resultScreen.className = 'active success-state';
+    icon.textContent = '✓';
+    amountEl.textContent = `₹${data.paid.toLocaleString('en-IN')}`;
+    label.textContent = 'Payment Confirmed';
+    detail.textContent = data.transaction_id
+      ? `Transaction: ${data.transaction_id}`
+      : 'Amount verified • Safe to hand over goods';
+
+    playSound('success');
+
+  } else {
+    resultScreen.className = 'active fail-state';
+    icon.textContent = '✗';
+    amountEl.textContent = `₹${data.paid.toLocaleString('en-IN')} Received`;
+    label.textContent = 'AMOUNT MISMATCH — DO NOT GIVE GOODS';
+    detail.textContent = `Expected ₹${data.expected.toLocaleString('en-IN')} • Got ₹${data.paid.toLocaleString('en-IN')}`;
+
+    playSound('fraud');
+  }
+
+  // Auto-reset after 6 seconds
+  let sec = 6;
+  const tick = setInterval(() => {
+    sec--;
+    countdown.textContent = `Resetting in ${sec}s...`;
+    if (sec <= 0) {
+      clearInterval(tick);
+      resetToStart();
+    }
+  }, 1000);
+}
+
+// ─────────────────────────────────────────────
+// SOUNDS (Web Audio API — no files needed)
+// ─────────────────────────────────────────────
+function playSound(type) {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+    if (type === 'success') {
+      // Pleasant ascending chime
+      [523, 659, 784, 1047].forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.frequency.value = freq;
+        osc.type = 'sine';
+        const t = ctx.currentTime + i * 0.12;
+        gain.gain.setValueAtTime(0.3, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+        osc.start(t);
+        osc.stop(t + 0.4);
+      });
+    } else {
+      // Harsh alert buzz
+      [200, 150, 200, 150].forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.frequency.value = freq;
+        osc.type = 'sawtooth';
+        const t = ctx.currentTime + i * 0.18;
+        gain.gain.setValueAtTime(0.4, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+        osc.start(t);
+        osc.stop(t + 0.15);
+      });
+    }
+  } catch(e) {}
+}
+
+// ─────────────────────────────────────────────
+// TIMER
+// ─────────────────────────────────────────────
+function startTimer(seconds) {
+  const bar = document.getElementById('timer-bar');
+  const label = document.getElementById('timer-label');
+  let remaining = seconds;
+
+  bar.style.width = '100%';
+
+  timerInterval = setInterval(() => {
+    remaining--;
+    const pct = (remaining / seconds) * 100;
+    bar.style.width = pct + '%';
+
+    const m = Math.floor(remaining / 60);
+    const s = remaining % 60;
+    label.textContent = `Expires in ${m}:${s.toString().padStart(2,'0')}`;
+
+    if (remaining <= 0) {
+      clearInterval(timerInterval);
+      label.textContent = 'QR Expired';
+      bar.style.background = '#ccc';
+      // Auto return after 2s
+      setTimeout(resetToStart, 2000);
+    }
+  }, 1000);
+}
+
+// ─────────────────────────────────────────────
+// NAVIGATION
+// ─────────────────────────────────────────────
+function showScreen(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+function resetToStart() {
+  clearInterval(timerInterval);
+  document.getElementById('screen-result').className = '';
+  showScreen('screen-amount');
+  amountStr = '';
+  updateAmountDisplay();
+  currentQrId = null;
+}
+
+document.getElementById('btn-cancel').addEventListener('click', () => {
+  clearInterval(timerInterval);
+  resetToStart();
+});
+
+// ─────────────────────────────────────────────
+// INIT
+// ─────────────────────────────────────────────
+// Set merchant avatar letter
+const name = MERCHANT_NAME;
+document.getElementById('merchant-avatar').textContent = name[0].toUpperCase();
+</script>
+
+</body>
+</html>
