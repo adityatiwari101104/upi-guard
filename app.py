@@ -104,13 +104,10 @@ def create_qr():
         upi_string = f"upi://pay?pa=merchant@okaxis&pn={merchant_name}&am={amount}&cu=INR&tn=Bill+Payment"
 
         # Generate QR image locally
-        qr_img = qrcode.QRCode(version=1, box_size=10, border=4)
-        qr_img.add_data(upi_string)
-        qr_img.make(fit=True)
-        img = qr_img.make_image(fill_color="black", back_color="white")
-
+        import segno
+        qr_gen = segno.make(upi_string)
         buffer = io.BytesIO()
-        img.save(buffer, format='PNG')
+        qr_gen.save(buffer, kind='png', scale=10)
         img_b64 = base64.b64encode(buffer.getvalue()).decode()
 
         qr_sessions[qr_id] = {

@@ -6,3 +6,4 @@ python-dotenv==1.0.0
 gunicorn==21.2.0
 eventlet==0.35.1
 setuptools==69.0.0
+segno==1.6.1
