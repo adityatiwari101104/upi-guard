@@ -21,7 +21,7 @@ load_dotenv()
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-prod')
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
 # Initialize Razorpay client
 client = razorpay.Client(auth=(
@@ -133,11 +133,6 @@ def create_qr():
 
 @app.route('/api/simulate-payment', methods=['POST'])
 def simulate_payment():
-    """
-    DEMO ONLY — simulates a payment coming in.
-    Body: { qr_id: "demo_qr_123", amount: 450 }  ← real payment
-    Body: { qr_id: "demo_qr_123", amount: 1 }    ← fraud attempt
-    """
     data = request.json
     qr_id = data.get('qr_id')
     paid_amount = float(data.get('amount', 0))
@@ -167,9 +162,9 @@ def simulate_payment():
         }
         session['status'] = 'mismatch'
 
-    # Push to merchant's browser via WebSocket
     socketio.emit('payment_result', result, room=merchant_id)
-
+    
+    # Also return result directly so frontend can handle if WebSocket drops
     return jsonify({'success': True, 'result': result})
 
 
