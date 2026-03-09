@@ -4,7 +4,6 @@ razorpay==1.4.1
 qrcode==7.4.2
 python-dotenv==1.0.0
 gunicorn==21.2.0
-gevent==24.2.1
-gevent-websocket==0.10.1
+eventlet==0.35.1
 setuptools==69.0.0
 segno==1.6.1
