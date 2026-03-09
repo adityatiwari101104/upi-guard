@@ -735,12 +735,20 @@ document.getElementById('btn-demo-fraud').addEventListener('click', async () => 
 });
 
 async function simulatePayment(amount) {
-  const res = await fetch('/api/simulate-payment', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ qr_id: currentQrId, amount })
-  });
-  // Result comes via WebSocket, not this response
+  try {
+    const res = await fetch('/api/simulate-payment', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ qr_id: currentQrId, amount })
+    });
+    const data = await res.json();
+    // Handle directly in case WebSocket drops
+    if (data.result) {
+      handlePaymentResult(data.result);
+    }
+  } catch (err) {
+    console.error('Payment simulation error:', err);
+  }
 }
 
 // ─────────────────────────────────────────────
