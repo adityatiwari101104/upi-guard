@@ -40,8 +40,8 @@ qr_sessions = {}
 processed_events = set()
 
 # In-memory transaction history store (for demo purposes)
-# Structure: [ { transaction_id, amount, status, timestamp, ... }, ... ]
-transaction_history = []
+# Structure: { merchant_id: [ { transaction_id, amount, status, timestamp, ... }, ... ] }
+transaction_history = {}
 
 
 # ─────────────────────────────────────────────
@@ -172,8 +172,19 @@ def simulate_payment():
 
     socketio.emit('payment_result', result, room=merchant_id)
     
+    # Record demo transaction to history
+    if merchant_id not in transaction_history:
+        transaction_history[merchant_id] = []
+    
+    # Add timestamp and transaction_id for demo history
+    result_copy = result.copy()
+    result_copy['timestamp'] = time.time()
+    result_copy['transaction_id'] = f"demo_txn_{int(time.time())}"
+    result_copy['qr_id'] = qr_id
+    transaction_history[merchant_id].append(result_copy)
+    
     # Also return result directly so frontend can handle if WebSocket drops
-    return jsonify({'success': True, 'result': result})
+    return jsonify({'success': True, 'result': result_copy})
 
 
 @app.route('/webhook', methods=['POST'])
@@ -254,7 +265,9 @@ def razorpay_webhook():
             session['status'] = 'mismatch'
 
         # Record to transaction history
-        transaction_history.append(result)
+        if merchant_id not in transaction_history:
+            transaction_history[merchant_id] = []
+        transaction_history[merchant_id].append(result)
 
         # Push real-time to merchant screen
         socketio.emit('payment_result', result, room=merchant_id)
@@ -273,8 +286,75 @@ def get_session(qr_id):
 
 @app.route('/api/history', methods=['GET'])
 def get_history():
-    """Retrieve transaction history for the dashboard"""
-    return jsonify({'success': True, 'history': transaction_history[-50:]}) # return last 50
+    """Retrieve transaction history for a specific merchant"""
+    merchant_id = request.args.get('merchant_id')
+    if not merchant_id:
+        return jsonify({'error': 'merchant_id required'}), 400
+        
+    history = transaction_history.get(merchant_id, [])
+    return jsonify({'success': True, 'history': history[-50:]}) # return last 50
+
+
+@app.route('/api/receipt/<qr_id>', methods=['GET'])
+def get_receipt(qr_id):
+    """Generate a printable HTML receipt for a successful payment"""
+    session = qr_sessions.get(qr_id)
+    if not session or session.get('status') != 'paid':
+        return "Receipt not found or payment not completed.", 404
+        
+    # In a real app, we'd query the DB/transaction_history for the exact matching transaction.
+    # We can reconstruct it from the session details for the demo.
+    paid_amount = session['expected_amount_rupees']
+    merchant_name = session['merchant_name']
+    transaction_id = request.args.get('txn_id', 'AUTO-GEN')
+    date_str = time.strftime('%d %b %Y, %I:%M %p')
+    
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Receipt - {qr_id}</title>
+        <style>
+            body {{ font-family: monospace; max-width: 400px; margin: 40px auto; color: #111; }}
+            .receipt {{ border: 1px dashed #ccc; padding: 24px; }}
+            .header {{ text-align: center; border-bottom: 1px solid #eee; padding-bottom: 16px; margin-bottom: 20px; }}
+            .brand {{ font-size: 24px; font-weight: bold; }}
+            .row {{ display: flex; justify-content: space-between; margin-bottom: 12px; }}
+            .total-row {{ border-top: 1px solid #111; border-bottom: 1px solid #111; padding: 12px 0; font-weight: bold; font-size: 18px; margin-top: 20px; }}
+            .footer {{ text-align: center; margin-top: 30px; font-size: 12px; color: #666; }}
+            @media print {{ body {{ margin: 0; }} .no-print {{ display: none; }} }}
+        </style>
+    </head>
+    <body>
+        <div class="receipt">
+            <div class="header">
+                <div class="brand">{merchant_name}</div>
+                <div>UPI-Guard AI Receipt</div>
+            </div>
+            
+            <div class="row"><span>Date:</span> <span>{date_str}</span></div>
+            <div class="row"><span>QR ID:</span> <span>{qr_id}</span></div>
+            <div class="row"><span>TXN ID:</span> <span>{transaction_id}</span></div>
+            <div class="row"><span>Status:</span> <span>SUCCESS ✓</span></div>
+            
+            <div class="row total-row">
+                <span>TOTAL PAID</span>
+                <span>₹{paid_amount}</span>
+            </div>
+            
+            <div class="footer">
+                Thank you for your payment.<br>
+                Powered by UPI-Guard AI.
+            </div>
+        </div>
+        
+        <div class="no-print" style="text-align:center; margin-top: 20px;">
+            <button onclick="window.print()" style="padding: 10px 20px; font-weight:bold; cursor:pointer;">Print / Download PDF</button>
+        </div>
+    </body>
+    </html>
+    """
+    return html
 
 
 # ─────────────────────────────────────────────

@@ -512,6 +512,16 @@
   </div>
 </header>
 
+<!-- MERCHANT LOGIN MODAL -->
+<div id="login-modal" style="position:fixed; inset:0; background:rgba(0,0,0,0.8); z-index:999; display:flex; align-items:center; justify-content:center;">
+  <div class="card" style="width: 90%; max-width: 400px; text-align:center;">
+    <h2 style="margin-bottom: 20px; font-weight:700;">Welcome to UPI-Guard</h2>
+    <p style="color:var(--dim); font-size:14px; margin-bottom: 20px;">Please enter your business name to open your terminal session.</p>
+    <input type="text" id="login-merchant-name" placeholder="E.g. Sharma Kirana Store" style="width:100%; padding:14px; border:1.5px solid var(--border); border-radius:10px; font-family:inherit; font-size:16px; margin-bottom:20px; text-align:center;">
+    <button class="btn-generate" id="btn-login" style="padding:14px;">Open Terminal</button>
+  </div>
+</div>
+
 <!-- MAIN CONTENT -->
 <div class="container">
 
@@ -616,15 +626,16 @@
   <div class="result-amount" id="result-amount">₹450</div>
   <div class="result-label" id="result-label">Payment Confirmed</div>
   <div class="result-detail" id="result-detail">Transaction ID: TXN123456</div>
-  <div class="result-auto-reset" id="result-countdown">Resetting in 5s...</div>
+  <a id="result-receipt-link" href="#" target="_blank" style="display:none; color:white; border:1px solid rgba(255,255,255,0.4); padding:8px 16px; border-radius:20px; text-decoration:none; font-size:14px; margin-top:10px;">Download Receipt</a>
+  <div class="result-auto-reset" id="result-countdown" style="margin-top:20px;">Resetting in 5s...</div>
 </div>
 
 <script>
 // ─────────────────────────────────────────────
 // STATE
 // ─────────────────────────────────────────────
-const MERCHANT_ID = 'merchant_' + Math.random().toString(36).substr(2, 8);
-const MERCHANT_NAME = 'Sharma Kirana Store';
+let MERCHANT_ID = localStorage.getItem('upiguard_merchant_id');
+let MERCHANT_NAME = localStorage.getItem('upiguard_merchant_name');
 
 let amountStr = '';
 let currentQrId = null;
@@ -832,6 +843,10 @@ function handlePaymentResult(data) {
     detail.textContent = data.transaction_id
       ? `Transaction: ${data.transaction_id}`
       : 'Amount verified • Safe to hand over goods';
+      
+    const receiptLink = document.getElementById('result-receipt-link');
+    receiptLink.style.display = 'inline-block';
+    receiptLink.href = `/api/receipt/${currentQrId}?txn_id=${data.transaction_id || ''}`;
 
     playSound('success');
 
@@ -841,6 +856,7 @@ function handlePaymentResult(data) {
     amountEl.textContent = `₹${data.paid.toLocaleString('en-IN')} Received`;
     label.textContent = 'AMOUNT MISMATCH — DO NOT GIVE GOODS';
     detail.textContent = `Expected ₹${data.expected.toLocaleString('en-IN')} • Got ₹${data.paid.toLocaleString('en-IN')}`;
+    document.getElementById('result-receipt-link').style.display = 'none';
 
     playSound('fraud');
   }
@@ -953,8 +969,9 @@ document.getElementById('btn-cancel').addEventListener('click', () => {
 // HISTORY
 // ─────────────────────────────────────────────
 async function loadHistory() {
+  if (!MERCHANT_ID) return;
   try {
-    const res = await fetch('/api/history');
+    const res = await fetch(`/api/history?merchant_id=${MERCHANT_ID}`);
     const data = await res.json();
     if(data.success) {
       const list = document.getElementById('history-list');
@@ -968,12 +985,16 @@ async function loadHistory() {
       data.history.slice().reverse().forEach(txn => {
         const timeStr = txn.timestamp ? new Date(txn.timestamp*1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '';
         const isSuccess = txn.status === 'SUCCESS';
+        // Fallback for older missing qr_ids in history
+        const qrIdParam = txn.qr_id || 'dummy';
+        const receiptHtml = isSuccess ? `<a href="/api/receipt/${qrIdParam}?txn_id=${txn.transaction_id || ''}" target="_blank" style="color:var(--saffron); text-decoration:none; display:inline-block; margin-top:4px;">📥 Receipt</a>` : '';
         
         list.innerHTML += `
           <div class="history-item ${isSuccess ? 'success' : 'mismatch'}">
             <div>
               <div style="font-weight:bold; color:${isSuccess ? 'var(--green)' : 'var(--red)'}">₹${txn.paid} ${isSuccess ? '✓' : '✗'}</div>
               <div style="font-size:11px; color:var(--dim)">Expected: ₹${txn.expected}</div>
+              ${receiptHtml}
             </div>
             <div style="text-align:right">
               <div class="history-time">${timeStr}</div>
@@ -991,14 +1012,40 @@ async function loadHistory() {
 document.getElementById('refresh-history').addEventListener('click', loadHistory);
 
 // ─────────────────────────────────────────────
-// INIT
+// INIT & LOGIN
 // ─────────────────────────────────────────────
-// Set merchant avatar letter
-const name = MERCHANT_NAME;
-document.getElementById('merchant-avatar').textContent = name[0].toUpperCase();
+function initMerchant() {
+  document.getElementById('merchant-name-display').textContent = MERCHANT_NAME;
+  document.getElementById('merchant-avatar').textContent = MERCHANT_NAME[0].toUpperCase();
+  // VPA username fallback visualization
+  const vpaPrefix = MERCHANT_NAME.toLowerCase().replace(/[^a-z0-9]/g, '').substring(0, 10);
+  document.querySelector('.merchant-vpa').textContent = `${vpaPrefix}@okaxis`;
+  
+  if (isConnected) {
+    socket.emit('join', { merchant_id: MERCHANT_ID }); // Rejoin correct room
+  }
+  loadHistory();
+}
 
-// Initial load
-loadHistory();
+if (!MERCHANT_ID || !MERCHANT_NAME) {
+  document.getElementById('login-modal').style.display = 'flex';
+} else {
+  document.getElementById('login-modal').style.display = 'none';
+  initMerchant();
+}
+
+document.getElementById('btn-login').addEventListener('click', () => {
+  const nameInput = document.getElementById('login-merchant-name').value.trim();
+  if (nameInput) {
+    MERCHANT_NAME = nameInput;
+    MERCHANT_ID = 'merchant_' + Math.random().toString(36).substr(2, 8);
+    localStorage.setItem('upiguard_merchant_name', MERCHANT_NAME);
+    localStorage.setItem('upiguard_merchant_id', MERCHANT_ID);
+    document.getElementById('login-modal').style.display = 'none';
+    initMerchant();
+  }
+});
+
 </script>
 
 </body>
