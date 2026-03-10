@@ -99,6 +99,36 @@
     box-shadow: 0 2px 12px rgba(0,0,0,0.06);
   }
 
+  .history-card {
+    margin-top: 10px;
+    padding: 16px;
+    background: #fafafa;
+  }
+
+  .history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+
+  .history-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px;
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 14px;
+  }
+  
+  .history-item.success { border-left: 4px solid var(--green); }
+  .history-item.mismatch { border-left: 4px solid var(--red); }
+  
+  .history-time { color: var(--dim); font-size: 11px; }
+
   .card-title {
     font-size: 12px;
     font-weight: 600;
@@ -523,6 +553,16 @@
     <button class="btn-generate" id="btn-generate" disabled>
       Generate QR Code
     </button>
+    
+    <div class="card history-card" id="history-container">
+      <div class="card-title" style="display:flex; justify-content:space-between;">
+        <span>Recent Transactions</span>
+        <span id="refresh-history" style="cursor:pointer; color:var(--saffron);">↻</span>
+      </div>
+      <div class="history-list" id="history-list">
+        <div style="text-align:center; color:var(--dim); font-size:12px; padding:10px;">No transactions yet</div>
+      </div>
+    </div>
 
   </div>
 
@@ -594,13 +634,22 @@ let isDemoMode = false;
 let resetTimeout = null;
 
 // ─────────────────────────────────────────────
-// WEBSOCKET
+// WEBSOCKET & OFFLINE QUEUE
 // ─────────────────────────────────────────────
 const socket = io();
+let isConnected = false;
+let messageQueue = [];
 
 socket.on('connect', () => {
+  isConnected = true;
   socket.emit('join', { merchant_id: MERCHANT_ID });
   updateConnectionUI(true);
+  
+  // Process queued offline simulate payment actions if any
+  while(messageQueue.length > 0) {
+    let queuedAction = messageQueue.shift();
+    queuedAction();
+  }
 });
 
 socket.on('disconnect', () => updateConnectionUI(false));
@@ -610,6 +659,7 @@ socket.on('payment_result', (data) => {
 });
 
 function updateConnectionUI(connected) {
+  isConnected = connected;
   document.getElementById('conn-dot').className = 'dot' + (connected ? ' connected' : '');
   document.getElementById('conn-label').textContent = connected ? 'Live' : 'Offline';
   document.getElementById('conn-badge').textContent = connected ? 'Live' : 'Offline';
@@ -735,6 +785,13 @@ document.getElementById('btn-demo-fraud').addEventListener('click', async () => 
 });
 
 async function simulatePayment(amount) {
+  // Offline state handler
+  if (!isConnected && !isDemoMode) {
+     alert("You are currently offline. Payment will be queued.");
+     messageQueue.push(() => simulatePayment(amount));
+     return;
+  }
+  
   try {
     const res = await fetch('/api/simulate-payment', {
       method: 'POST',
@@ -748,6 +805,9 @@ async function simulatePayment(amount) {
     }
   } catch (err) {
     console.error('Payment simulation error:', err);
+    if (!isConnected) {
+        messageQueue.push(() => simulatePayment(amount));
+    }
   }
 }
 
@@ -890,11 +950,55 @@ document.getElementById('btn-cancel').addEventListener('click', () => {
 });
 
 // ─────────────────────────────────────────────
+// HISTORY
+// ─────────────────────────────────────────────
+async function loadHistory() {
+  try {
+    const res = await fetch('/api/history');
+    const data = await res.json();
+    if(data.success) {
+      const list = document.getElementById('history-list');
+      if(data.history.length === 0) {
+        list.innerHTML = '<div style="text-align:center; color:var(--dim); font-size:12px; padding:10px;">No transactions yet</div>';
+        return;
+      }
+      
+      list.innerHTML = '';
+      // Reverse to show newest first
+      data.history.slice().reverse().forEach(txn => {
+        const timeStr = txn.timestamp ? new Date(txn.timestamp*1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '';
+        const isSuccess = txn.status === 'SUCCESS';
+        
+        list.innerHTML += `
+          <div class="history-item ${isSuccess ? 'success' : 'mismatch'}">
+            <div>
+              <div style="font-weight:bold; color:${isSuccess ? 'var(--green)' : 'var(--red)'}">₹${txn.paid} ${isSuccess ? '✓' : '✗'}</div>
+              <div style="font-size:11px; color:var(--dim)">Expected: ₹${txn.expected}</div>
+            </div>
+            <div style="text-align:right">
+              <div class="history-time">${timeStr}</div>
+              <div style="font-size:10px; color:#aaa; font-family:monospace;">${txn.transaction_id ? txn.transaction_id.substring(0,8)+'...' : 'auto-gen'}</div>
+            </div>
+          </div>
+        `;
+      });
+    }
+  } catch(e) {
+    console.error("Could not load history", e);
+  }
+}
+
+document.getElementById('refresh-history').addEventListener('click', loadHistory);
+
+// ─────────────────────────────────────────────
 // INIT
 // ─────────────────────────────────────────────
 // Set merchant avatar letter
 const name = MERCHANT_NAME;
 document.getElementById('merchant-avatar').textContent = name[0].toUpperCase();
+
+// Initial load
+loadHistory();
 </script>
 
 </body>

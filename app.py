@@ -12,6 +12,7 @@ import time
 import qrcode
 import io
 import base64
+from collections import deque
 from flask import Flask, request, jsonify, render_template
 from flask_socketio import SocketIO, emit, join_room
 from dotenv import load_dotenv
@@ -32,8 +33,15 @@ client = razorpay.Client(auth=(
 RAZORPAY_WEBHOOK_SECRET = os.getenv('RAZORPAY_WEBHOOK_SECRET', 'YOUR_WEBHOOK_SECRET')
 
 # In-memory session store (use Redis/DB in production)
-# Structure: { qr_id: { merchant_id, expected_amount, status, created_at } }
+# Structure: { qr_id: { merchant_id, expected_amount, status, created_at, history: [...] } }
 qr_sessions = {}
+
+# Processed webhook events cache for idempotency
+processed_events = set()
+
+# In-memory transaction history store (for demo purposes)
+# Structure: [ { transaction_id, amount, status, timestamp, ... }, ... ]
+transaction_history = []
 
 
 # ─────────────────────────────────────────────
@@ -188,10 +196,17 @@ def razorpay_webhook():
         if not hmac.compare_digest(expected_sig, signature):
             return jsonify({'error': 'Invalid signature'}), 400
     except Exception:
+        # In production this should be strictly enforced
         pass  # Skip verification in demo mode
 
     data = json.loads(payload)
     event = data.get('event')
+    
+    # Idempotency Check: Don't process the same webhook event twice
+    event_id = data.get('event_id') if 'event_id' in data else f"evt_{hashlib.md5(payload.encode()).hexdigest()}"
+    if event_id in processed_events:
+        return jsonify({'status': 'ok', 'message': 'Duplicate event ignored'})
+    processed_events.add(event_id)
 
     if event == 'qr_code.credited':
         # Extract payment info
@@ -200,23 +215,31 @@ def razorpay_webhook():
 
         qr_id = qr_entity['id']
         amount_received = payment_entity['amount']  # in paise
+        transaction_id = payment_entity.get('id', '')
 
         session = qr_sessions.get(qr_id)
         if not session:
+            # Optionally record unmatched payments to an orphan ledger
             return jsonify({'error': 'Session not found'}), 404
+
+        # If already paid, ignore (Secondary idempotency backup)
+        if session['status'] == 'paid':
+            return jsonify({'status': 'ok', 'message': 'Already processed'})
 
         expected = session['expected_amount']
         merchant_id = session['merchant_id']
-        paid_rupees = amount_received / 100
-        expected_rupees = expected / 100
+        paid_rupees = float(amount_received) / 100.0
+        expected_rupees = float(expected) / 100.0
 
+        # Strict amount equality check
         if amount_received == expected:
             result = {
                 'status': 'SUCCESS',
                 'paid': paid_rupees,
                 'expected': expected_rupees,
                 'message': f"₹{paid_rupees:.0f} Received ✓",
-                'transaction_id': payment_entity.get('id', '')
+                'transaction_id': transaction_id,
+                'timestamp': time.time()
             }
             session['status'] = 'paid'
         else:
@@ -225,9 +248,13 @@ def razorpay_webhook():
                 'paid': paid_rupees,
                 'expected': expected_rupees,
                 'message': f"FRAUD ALERT! Expected ₹{expected_rupees:.0f}, Got ₹{paid_rupees:.0f}",
-                'transaction_id': payment_entity.get('id', '')
+                'transaction_id': transaction_id,
+                'timestamp': time.time()
             }
             session['status'] = 'mismatch'
+
+        # Record to transaction history
+        transaction_history.append(result)
 
         # Push real-time to merchant screen
         socketio.emit('payment_result', result, room=merchant_id)
@@ -242,6 +269,12 @@ def get_session(qr_id):
     if not session:
         return jsonify({'error': 'Not found'}), 404
     return jsonify(session)
+
+
+@app.route('/api/history', methods=['GET'])
+def get_history():
+    """Retrieve transaction history for the dashboard"""
+    return jsonify({'success': True, 'history': transaction_history[-50:]}) # return last 50
 
 
 # ─────────────────────────────────────────────
