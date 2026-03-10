@@ -5,498 +5,282 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>UPI Guard — Merchant Terminal</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&family=JetBrains+Mono:wght@400;700&family=Tiro+Devanagari+Hindi&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
 <style>
   :root {
-    --ink: #0a0a0a;
-    --paper: #f5f0e8;
-    --saffron: #ff6b00;
-    --green: #00b359;
-    --red: #e01020;
-    --dim: #888;
-    --card: #fff;
-    --border: #ddd;
-    --success-bg: #00b359;
-    --fail-bg: #e01020;
+    --bg-dark: #121212;
+    --card-bg: #1c1c1c;
+    --card-bg-light: #252525;
+    --border: #333;
+    --text-primary: #f5f5f5;
+    --text-secondary: #a0a0a0;
+    --saffron: #f97316;
+    --saffron-hover: #ea580c;
+    --green: #10b981;
+    --green-bg: rgba(16, 185, 129, 0.15);
+    --yellow: #f59e0b;
+    --yellow-bg: rgba(245, 158, 11, 0.15);
+    --red: #ef4444;
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
   body {
-    font-family: 'Rajdhani', sans-serif;
-    background: var(--paper);
+    font-family: 'Inter', sans-serif;
+    background: var(--bg-dark);
+    color: var(--text-primary);
     min-height: 100vh;
     display: flex;
     flex-direction: column;
-    align-items: center;
     overflow-x: hidden;
   }
 
   /* ── HEADER ── */
   header {
     width: 100%;
-    background: var(--ink);
-    color: white;
-    padding: 14px 24px;
+    padding: 16px 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-dark);
+  }
+
+  .logo-container {
     display: flex;
     align-items: center;
     gap: 12px;
   }
 
   .logo-mark {
-    width: 36px; height: 36px;
+    width: 32px; height: 32px;
     background: var(--saffron);
-    border-radius: 8px;
+    border-radius: 6px;
     display: flex; align-items: center; justify-content: center;
-    font-size: 18px; font-weight: 700;
+    font-size: 16px; font-weight: 700;
     color: white;
-    flex-shrink: 0;
   }
 
-  .logo-text {
-    font-size: 20px;
-    font-weight: 700;
-    letter-spacing: 1px;
-  }
+  .logo-text { font-size: 18px; font-weight: 600; letter-spacing: 0.5px; }
 
-  .logo-text span { color: var(--saffron); }
-
-  .status-dot {
-    margin-left: auto;
+  .header-badges { display: flex; gap: 16px; align-items: center; font-size: 12px; font-weight: 500;}
+  
+  .pill {
+    padding: 6px 12px;
+    border-radius: 20px;
     display: flex; align-items: center; gap: 6px;
-    font-size: 13px; color: #aaa;
-    font-family: 'JetBrains Mono', monospace;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
   }
 
-  .dot {
-    width: 8px; height: 8px;
-    border-radius: 50%;
-    background: #555;
-  }
-  .dot.connected { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .pill.green { background: var(--green-bg); color: var(--green); border-color: transparent; }
+  .pill-dot { width: 6px; height: 6px; border-radius: 50%; }
+  .pill-dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
 
-  /* ── MAIN CONTAINER ── */
-  .container {
+  /* ── MAIN DASHBOARD ── */
+  .dashboard {
+    flex: 1;
     width: 100%;
-    max-width: 480px;
-    padding: 24px 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 32px;
+    display: grid;
+    grid-template-columns: 1fr 400px;
+    gap: 32px;
+    align-items: start;
   }
 
-  /* ── SCREEN STATES ── */
-  .screen { display: none; }
-  .screen.active { display: flex; flex-direction: column; gap: 16px; }
-
-  /* ── CARD ── */
+  /* ── CARDS ── */
   .card {
-    background: var(--card);
-    border: 1.5px solid var(--border);
+    background: var(--card-bg);
+    border: 1px solid var(--border);
     border-radius: 16px;
     padding: 24px;
-    box-shadow: 0 2px 12px rgba(0,0,0,0.06);
-  }
-
-  .history-card {
-    margin-top: 10px;
-    padding: 16px;
-    background: #fafafa;
-  }
-
-  .history-list {
+    box-shadow: 0 8px 32px rgba(0,0,0,0.2);
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    max-height: 200px;
-    overflow-y: auto;
-  }
-
-  .history-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 10px;
-    background: white;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    font-size: 14px;
-  }
-  
-  .history-item.success { border-left: 4px solid var(--green); }
-  .history-item.mismatch { border-left: 4px solid var(--red); }
-  
-  .history-time { color: var(--dim); font-size: 11px; }
-
-  .card-title {
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 2px;
-    text-transform: uppercase;
-    color: var(--dim);
-    margin-bottom: 16px;
-  }
-
-  /* ── AMOUNT INPUT ── */
-  .amount-display {
-    background: var(--ink);
-    border-radius: 12px;
-    padding: 20px 24px;
-    text-align: right;
-    margin-bottom: 20px;
-    min-height: 80px;
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-  }
-
-  .currency-symbol {
-    font-size: 28px;
-    color: var(--saffron);
-    font-weight: 700;
-    margin-right: 4px;
-    line-height: 1;
-  }
-
-  .amount-value {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 48px;
-    font-weight: 700;
-    color: white;
-    line-height: 1;
-    letter-spacing: -2px;
-  }
-
-  .amount-value.placeholder { color: #444; font-size: 36px; }
-
-  /* ── NUMPAD ── */
-  .numpad {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 10px;
-  }
-
-  .key {
-    background: white;
-    border: 1.5px solid #e0e0e0;
-    border-radius: 12px;
-    padding: 18px 8px;
-    font-size: 24px;
-    font-weight: 600;
-    font-family: 'Rajdhani', sans-serif;
-    cursor: pointer;
-    transition: all 0.12s;
-    text-align: center;
-    color: var(--ink);
-    user-select: none;
-    -webkit-tap-highlight-color: transparent;
-  }
-
-  .key:active, .key.pressed {
-    background: var(--ink);
-    color: white;
-    border-color: var(--ink);
-    transform: scale(0.96);
-  }
-
-  .key.zero { grid-column: span 1; }
-  .key.dot-key { background: #f9f9f9; color: var(--dim); }
-  .key.backspace { background: #fff5f0; border-color: #ffd0b0; color: var(--saffron); font-size: 20px; }
-
-  /* ── GENERATE BUTTON ── */
-  .btn-generate {
-    background: var(--saffron);
-    color: white;
-    border: none;
-    border-radius: 14px;
-    padding: 18px;
-    font-size: 18px;
-    font-weight: 700;
-    font-family: 'Rajdhani', sans-serif;
-    letter-spacing: 1px;
-    cursor: pointer;
-    width: 100%;
-    transition: all 0.15s;
-    text-transform: uppercase;
-  }
-
-  .btn-generate:hover { background: #e55a00; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(255,107,0,0.3); }
-  .btn-generate:active { transform: translateY(0); }
-  .btn-generate:disabled { background: #ccc; cursor: not-allowed; transform: none; box-shadow: none; }
-
-  /* ── QR SCREEN ── */
-  .qr-wrapper {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
     gap: 20px;
   }
 
-  .qr-amount-badge {
-    background: var(--ink);
-    color: white;
-    border-radius: 50px;
-    padding: 10px 28px;
-    font-size: 28px;
-    font-weight: 700;
-    font-family: 'JetBrains Mono', monospace;
-    letter-spacing: 1px;
+  .left-col { display: flex; flex-direction: column; gap: 24px; }
+  .right-col { position: relative; }
+  
+  /* Screen Handling in Right Col */
+  .screen { display: none; }
+  .screen.active { display: block; }
+
+  .card-header {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 14px; font-weight: 500; color: var(--text-secondary);
   }
 
-  .qr-amount-badge .rs { color: var(--saffron); }
-
-  .qr-image-container {
-    position: relative;
-    border: 3px solid var(--ink);
-    border-radius: 20px;
-    padding: 16px;
-    background: white;
+  /* ── SAFETY CARD ── */
+  .safety-card { position: relative; overflow: hidden; }
+  .safety-card-content {
+      display: flex; justify-content: space-between; align-items: center;
   }
-
-  .qr-image-container img {
-    width: 240px;
-    height: 240px;
-    display: block;
+  .safety-left { display: flex; align-items: center; gap: 16px; }
+  .shield-icon {
+      width: 48px; height: 48px; border-radius: 12px; border: 2px solid var(--green); 
+      display: flex; align-items: center; justify-content: center; color: var(--green); font-size: 24px;
+      box-shadow: 0 0 15px rgba(16,185,129,0.2) inset;
   }
+  .safety-title { font-size: 13px; color: var(--text-secondary); margin-bottom: 4px; }
+  .safety-main { font-size: 24px; font-weight: 600; color: var(--text-primary); letter-spacing: 0.5px;}
+  
+  .risk-meter { display: flex; align-items: center; gap: 12px; }
+  .risk-value { font-size: 28px; font-weight: 700; color: var(--green); font-family: 'JetBrains Mono', monospace;}
+  .risk-bar-container { background: var(--card-bg-light); height: 8px; width: 150px; border-radius: 4px; overflow: hidden; margin-top: 12px;}
+  .risk-bar { background: var(--green); height: 100%; width: 12%; box-shadow: 0 0 8px var(--green); }
 
-  .qr-overlay {
-    position: absolute;
-    inset: 0;
-    background: rgba(255,255,255,0.92);
-    border-radius: 18px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 14px;
-    color: var(--dim);
-    display: none;
+  /* ── MERCHANT DETAILS ── */
+  .merchant-profile {
+      background: var(--card-bg-light); border-radius: 12px; padding: 16px;
+      display: flex; align-items: center; gap: 16px; border: 1px solid var(--border);
   }
-
-  .waiting-indicator {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    color: var(--dim);
-    font-size: 15px;
+  .m-avatar {
+      width: 48px; height: 48px; background: var(--bg-dark); border-radius: 10px;
+      display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 600; color: var(--saffron);
   }
+  .m-info h3 { font-size: 18px; font-weight: 600; margin-bottom: 4px; display:flex; align-items:center; gap:8px;}
+  .m-info p { font-size: 13px; color: var(--text-secondary); }
+  
+  .merchant-stats { display: flex; gap: 24px; font-size: 13px; color: var(--text-secondary); padding-top: 4px;}
+  .merchant-stats span { color: var(--text-primary); font-weight: 500; font-family: 'JetBrains Mono', monospace; }
 
-  .pulse-ring {
-    width: 14px; height: 14px;
-    border-radius: 50%;
-    background: var(--saffron);
-    animation: pulse 1.4s ease-in-out infinite;
+  /* ── HISTORY ── */
+  .history-list { display: flex; flex-direction: column; gap: 12px; max-height: 300px; overflow-y: auto; padding-right: 8px; }
+  .history-list::-webkit-scrollbar { width: 6px; }
+  .history-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 10px; }
+  
+  .history-item {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 16px; background: var(--card-bg-light); border-radius: 12px;
+      border: 1px solid transparent; transition: 0.2s;
   }
+  .history-item:hover { border-color: var(--border); background: #2a2a2a; }
+  .h-left { display: flex; align-items: center; gap: 16px; }
+  .h-amt { font-size: 18px; font-weight: 600; font-family: 'JetBrains Mono', monospace; width: 70px; }
+  .h-detail .name { font-size: 15px; font-weight: 500; margin-bottom: 4px; color: var(--text-primary); }
+  .h-detail .sub { font-size: 12px; color: var(--text-secondary); display:flex; gap:12px; align-items:center;}
+  .h-right { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+  
+  .badge { padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 500; display:flex; align-items:center; gap:6px; }
+  .badge.safe { background: var(--green-bg); color: var(--green); }
+  .badge.warn { background: var(--yellow-bg); color: var(--yellow); }
+  .badge.danger { background: rgba(239, 68, 68, 0.15); color: var(--red); }
+  
+  .receipt-link { color: var(--text-secondary); font-size: 12px; text-decoration: none; cursor:pointer; }
+  .receipt-link:hover { color: white; text-decoration: underline; }
 
-  @keyframes pulse {
-    0%, 100% { transform: scale(1); opacity: 1; }
-    50% { transform: scale(1.5); opacity: 0.5; }
+  /* ── NUMPAD CARD ── */
+  .display-box {
+      background: #0a0a0a; border-radius: 12px; padding: 24px; height: 90px;
+      display: flex; align-items: center; justify-content: flex-end; border: 1px solid #000;
   }
+  .currency { font-size: 24px; color: var(--saffron); margin-right: 8px; font-weight: 600;}
+  .amount-val { font-size: 40px; font-family: 'JetBrains Mono', monospace; font-weight: 600; color: white; letter-spacing: -1px;}
+  .amount-val.placeholder { color: #555; }
 
-  .timer-bar-wrapper {
-    width: 100%;
-    background: #eee;
-    border-radius: 4px;
-    height: 4px;
-    overflow: hidden;
+  .numpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 10px;}
+  .key {
+      background: var(--card-bg-light); border: 1px solid var(--border); border-radius: 12px;
+      padding: 16px; font-size: 24px; font-weight: 500; color: white;
+      cursor: pointer; transition: 0.1s; display: flex; align-items: center; justify-content: center;
+      user-select: none; -webkit-tap-highlight-color: transparent;
   }
-
-  .timer-bar {
-    height: 100%;
-    background: var(--saffron);
-    border-radius: 4px;
-    width: 100%;
-    transition: width 1s linear;
+  .key:hover { background: #333; }
+  .key:active { transform: scale(0.96); background: var(--saffron); border-color: var(--saffron); }
+  .key.action-key { border-color: var(--saffron); color: var(--saffron); }
+  
+  .btn-pay {
+      background: transparent; color: white; border: 1px solid var(--saffron); border-radius: 12px;
+      padding: 18px; font-size: 16px; font-weight: 600; cursor: pointer; transition: 0.2s;
+      width: 100%; margin-top: 24px; background: linear-gradient(90deg, rgba(249,115,22,0.1), transparent);
   }
+  .btn-pay:hover:not(:disabled) { background: var(--saffron); box-shadow: 0 0 20px rgba(249,115,22,0.3); border-color: transparent;}
+  .btn-pay:disabled { border-color: var(--border); color: #666; cursor: not-allowed; background: transparent; }
 
-  .timer-label {
-    font-size: 13px;
-    color: var(--dim);
-    font-family: 'JetBrains Mono', monospace;
-    text-align: center;
+  /* ── QR SCREEN ── */
+  .qr-container { display: flex; flex-direction: column; align-items: center; gap: 24px; padding: 20px 0;}
+  .qr-box { 
+      background: white; padding: 16px; border-radius: 16px; width: 240px; height: 240px;
+      box-shadow: 0 0 30px rgba(255,255,255,0.1); display:flex; align-items:center; justify-content:center;
   }
+  .qr-box img { width: 100%; height: 100%; display: block; }
+  
+  .timer-wrap { width: 100%; text-align: center;}
+  .timer-bar-bg { width: 100%; height: 4px; background: var(--card-bg-light); border-radius: 4px; overflow: hidden; margin-bottom: 8px;}
+  .timer-bar { width: 100%; height: 100%; background: var(--saffron); transition: width 1s linear;}
+  .timer-text { font-size: 13px; font-family: 'JetBrains Mono', monospace; color: var(--text-secondary); }
 
+  .demo-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; width: 100%; margin-top: 10px;}
+  .btn-demo { padding: 12px; border-radius: 8px; border: 1px solid; font-size: 13px; font-weight: 600; cursor: pointer; background: transparent;}
+  .btn-demo.success { border-color: var(--green); color: var(--green); }
+  .btn-demo.success:hover { background: var(--green-bg); }
+  .btn-demo.fraud { border-color: var(--red); color: var(--red); }
+  .btn-demo.fraud:hover { background: rgba(239, 68, 68, 0.15); }
+  
   .btn-cancel {
-    background: transparent;
-    border: 1.5px solid #ddd;
-    border-radius: 10px;
-    padding: 12px;
-    font-family: 'Rajdhani', sans-serif;
-    font-size: 15px;
-    color: var(--dim);
-    cursor: pointer;
-    width: 100%;
-    transition: all 0.15s;
+    background: transparent; border: 1px solid var(--border); color: var(--text-secondary);
+    padding: 14px; border-radius: 8px; width: 100%; cursor: pointer; margin-top: 16px; font-size: 14px;
   }
-  .btn-cancel:hover { border-color: #999; color: var(--ink); }
+  .btn-cancel:hover { background: var(--card-bg-light); color: white; }
 
-  /* ── DEMO CONTROLS ── */
-  .demo-box {
-    background: #fffbf0;
-    border: 1.5px dashed #f0c040;
-    border-radius: 12px;
-    padding: 16px;
-  }
-
-  .demo-box .demo-title {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 2px;
-    text-transform: uppercase;
-    color: #c09000;
-    margin-bottom: 12px;
-  }
-
-  .demo-buttons {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
-  }
-
-  .btn-demo {
-    padding: 12px;
-    border-radius: 8px;
-    font-family: 'Rajdhani', sans-serif;
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    border: none;
-    transition: all 0.12s;
-  }
-
-  .btn-demo.success { background: #e8fff2; color: var(--green); border: 1.5px solid var(--green); }
-  .btn-demo.fraud { background: #fff0f0; color: var(--red); border: 1.5px solid var(--red); }
-  .btn-demo:hover { transform: translateY(-1px); }
-
-  /* ── RESULT SCREEN ── */
+  /* ── RESULT OVERLAY ── */
   #screen-result {
-    position: fixed;
-    inset: 0;
-    z-index: 100;
-    display: none;
-    align-items: center;
-    justify-content: center;
-    flex-direction: column;
-    gap: 24px;
-    padding: 32px;
+    position: fixed; inset: 0; z-index: 100; display: none;
+    align-items: center; justify-content: center; flex-direction: column; gap: 20px;
+    background: rgba(18, 18, 18, 0.95); backdrop-filter: blur(10px);
   }
-
-  #screen-result.active {
-    display: flex;
+  #screen-result.active { display: flex; }
+  
+  .result-box {
+      background: var(--card-bg); border: 2px solid transparent; border-radius: 24px;
+      padding: 48px; text-align: center; max-width: 400px; width: 90%;
+      box-shadow: 0 20px 50px rgba(0,0,0,0.5);
   }
+  #screen-result.success-state .result-box { border-color: var(--green); box-shadow: 0 0 40px rgba(16,185,129,0.2); }
+  #screen-result.fail-state .result-box { border-color: var(--red); box-shadow: 0 0 40px rgba(239,68,68,0.2); }
 
-  #screen-result.success-state {
-    background: var(--green);
-    animation: flashGreen 0.3s ease;
+  .res-icon { font-size: 72px; line-height: 1; margin-bottom: 16px; }
+  #screen-result.success-state .res-icon { color: var(--green); }
+  #screen-result.fail-state .res-icon { color: var(--red); }
+  
+  .res-amt { font-size: 48px; font-family: 'JetBrains Mono', monospace; font-weight: 700; color: white; margin-bottom: 8px;}
+  .res-msg { font-size: 18px; font-weight: 500; color: var(--text-secondary); margin-bottom: 24px;}
+  .res-det { font-size: 13px; font-family: 'JetBrains Mono', monospace; color: #777; background: #111; padding: 12px; border-radius: 8px; margin-bottom: 24px;}
+  
+  .res-receipt {
+      display: inline-block; padding: 10px 24px; border: 1px solid var(--border); border-radius: 20px;
+      color: white; text-decoration: none; font-size: 14px; font-weight: 500; transition: 0.2s;
   }
+  .res-receipt:hover { background: var(--card-bg-light); border-color: #555; }
+  .res-countdown { font-size: 13px; color: #555; margin-top: 16px; }
 
-  #screen-result.fail-state {
-    background: var(--red);
-    animation: flashRed 0.4s ease;
-  }
-
-  @keyframes flashGreen {
-    0% { background: white; }
-    100% { background: var(--green); }
-  }
-
-  @keyframes flashRed {
-    0%, 50% { background: white; }
-    25%, 75% { background: var(--red); }
-    100% { background: var(--red); }
-  }
-
-  .result-icon {
-    font-size: 96px;
-    line-height: 1;
-    animation: iconPop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
-  }
-
-  @keyframes iconPop {
-    0% { transform: scale(0); opacity: 0; }
-    100% { transform: scale(1); opacity: 1; }
-  }
-
-  .result-amount {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 56px;
-    font-weight: 700;
-    color: white;
-    letter-spacing: -2px;
-    line-height: 1;
-  }
-
-  .result-label {
-    font-size: 22px;
-    font-weight: 600;
-    color: rgba(255,255,255,0.85);
-    text-align: center;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-  }
-
-  .result-detail {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 14px;
-    color: rgba(255,255,255,0.65);
-    text-align: center;
-    padding: 12px 20px;
-    background: rgba(0,0,0,0.15);
-    border-radius: 8px;
-  }
-
-  .result-auto-reset {
-    font-size: 14px;
-    color: rgba(255,255,255,0.5);
-  }
-
-  /* ── MERCHANT INFO BAR ── */
-  .merchant-bar {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    background: white;
-    border: 1.5px solid var(--border);
-    border-radius: 12px;
-    padding: 12px 16px;
-  }
-
-  .merchant-avatar {
-    width: 36px; height: 36px;
-    background: var(--ink);
-    border-radius: 8px;
+  /* ── LOGIN MODAL ── */
+  #login-modal {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.85); backdrop-filter: blur(5px); z-index: 999;
     display: flex; align-items: center; justify-content: center;
-    color: var(--saffron);
-    font-weight: 700;
-    font-size: 16px;
   }
-
-  .merchant-info { flex: 1; }
-  .merchant-name { font-size: 15px; font-weight: 700; color: var(--ink); }
-  .merchant-vpa { font-size: 12px; color: var(--dim); font-family: 'JetBrains Mono', monospace; }
-
-  .connection-badge {
-    font-size: 11px;
-    font-family: 'JetBrains Mono', monospace;
-    padding: 4px 10px;
-    border-radius: 20px;
-    background: #f0f0f0;
-    color: var(--dim);
+  .login-card {
+    background: var(--card-bg); border: 1px solid var(--border); border-radius: 20px;
+    padding: 40px; width: 90%; max-width: 420px; text-align: center;
   }
-  .connection-badge.live { background: #e8fff2; color: var(--green); }
-
-  /* ── LOADING SPINNER ── */
-  .spinner {
-    display: inline-block;
-    width: 20px; height: 20px;
-    border: 2.5px solid rgba(255,255,255,0.3);
-    border-top-color: white;
-    border-radius: 50%;
-    animation: spin 0.7s linear infinite;
-    margin-right: 8px;
-    vertical-align: middle;
+  .login-card h2 { font-size: 24px; margin-bottom: 12px; color: white; }
+  .login-card p { color: var(--text-secondary); font-size: 14px; margin-bottom: 32px; }
+  .login-card input {
+    width: 100%; padding: 16px; background: #0a0a0a; border: 1px solid var(--border);
+    border-radius: 12px; color: white; font-size: 16px; text-align: center; font-family: inherit; margin-bottom: 24px;
   }
-  @keyframes spin { to { transform: rotate(360deg); } }
+  .login-card input:focus { outline: none; border-color: var(--saffron); }
+  .login-btn {
+    width: 100%; padding: 16px; background: var(--saffron); color: white; border: none;
+    border-radius: 12px; font-size: 16px; font-weight: 600; cursor: pointer; transition: 0.2s;
+  }
+  .login-btn:hover { background: var(--saffron-hover); }
 
 </style>
 </head>
@@ -504,135 +288,171 @@
 
 <!-- HEADER -->
 <header>
-  <div class="logo-mark">U</div>
-  <div class="logo-text">UPI<span>Guard</span></div>
-  <div class="status-dot">
-    <div class="dot" id="conn-dot"></div>
-    <span id="conn-label">Connecting</span>
+  <div class="logo-container">
+    <div class="logo-mark">U</div>
+    <div class="logo-text">UPIGuard</div>
+  </div>
+  
+  <div class="header-badges">
+    <div class="pill">
+      <div class="pill-dot green"></div>
+      <span id="conn-label">Connecting</span>
+    </div>
+    <div class="pill green" style="background:transparent;">
+      <div class="pill-dot green"></div> Protected by UPI Guard AI
+    </div>
   </div>
 </header>
 
-<!-- MERCHANT LOGIN MODAL -->
-<div id="login-modal" style="position:fixed; inset:0; background:rgba(0,0,0,0.8); z-index:999; display:flex; align-items:center; justify-content:center;">
-  <div class="card" style="width: 90%; max-width: 400px; text-align:center;">
-    <h2 style="margin-bottom: 20px; font-weight:700;">Welcome to UPI-Guard</h2>
-    <p style="color:var(--dim); font-size:14px; margin-bottom: 20px;">Please enter your business name to open your terminal session.</p>
-    <input type="text" id="login-merchant-name" placeholder="E.g. Sharma Kirana Store" style="width:100%; padding:14px; border:1.5px solid var(--border); border-radius:10px; font-family:inherit; font-size:16px; margin-bottom:20px; text-align:center;">
-    <button class="btn-generate" id="btn-login" style="padding:14px;">Open Terminal</button>
-  </div>
-</div>
-
-<!-- MAIN CONTENT -->
-<div class="container">
-
-  <!-- Merchant Info Bar -->
-  <div class="merchant-bar">
-    <div class="merchant-avatar" id="merchant-avatar">S</div>
-    <div class="merchant-info">
-      <div class="merchant-name" id="merchant-name-display">Sharma Kirana Store</div>
-      <div class="merchant-vpa">sharma@okaxis</div>
-    </div>
-    <div class="connection-badge" id="conn-badge">Offline</div>
-  </div>
-
-  <!-- SCREEN 1: Enter Amount -->
-  <div class="screen active" id="screen-amount">
-
-    <div class="card">
-      <div class="card-title">Bill Amount</div>
-      <div class="amount-display">
-        <span class="currency-symbol">₹</span>
-        <span class="amount-value placeholder" id="amount-display">0</span>
-      </div>
-      <div class="numpad" id="numpad">
-        <button class="key" data-val="1">1</button>
-        <button class="key" data-val="2">2</button>
-        <button class="key" data-val="3">3</button>
-        <button class="key" data-val="4">4</button>
-        <button class="key" data-val="5">5</button>
-        <button class="key" data-val="6">6</button>
-        <button class="key" data-val="7">7</button>
-        <button class="key" data-val="8">8</button>
-        <button class="key" data-val="9">9</button>
-        <button class="key dot-key" data-val=".">.</button>
-        <button class="key zero" data-val="0">0</button>
-        <button class="key backspace" data-val="back">⌫</button>
-      </div>
-    </div>
-
-    <button class="btn-generate" id="btn-generate" disabled>
-      Generate QR Code
-    </button>
+<!-- DASHBOARD -->
+<main class="dashboard">
+  
+  <!-- LEFT COLUMN -->
+  <div class="left-col">
     
-    <div class="card history-card" id="history-container">
-      <div class="card-title" style="display:flex; justify-content:space-between;">
-        <span>Recent Transactions</span>
-        <span id="refresh-history" style="cursor:pointer; color:var(--saffron);">↻</span>
-      </div>
-      <div class="history-list" id="history-list">
-        <div style="text-align:center; color:var(--dim); font-size:12px; padding:10px;">No transactions yet</div>
-      </div>
+    <!-- Safety Card -->
+    <div class="card safety-card">
+        <div class="safety-card-content">
+            <div class="safety-left">
+                <div class="shield-icon">🛡</div>
+                <div>
+                    <div class="safety-title">Transaction Safety</div>
+                    <div class="safety-main">SAFE TRANSACTION</div>
+                    <div style="font-size:12px; color:var(--text-secondary); margin-top:8px; display:flex; align-items:center; gap:6px;">
+                        <div class="pill-dot green"></div> Low Risk
+                    </div>
+                </div>
+            </div>
+            <div class="risk-meter">
+                <div class="risk-value">12%</div>
+            </div>
+        </div>
+        <div class="risk-bar-container"><div class="risk-bar"></div></div>
     </div>
 
-  </div>
-
-  <!-- SCREEN 2: QR Display + Waiting -->
-  <div class="screen" id="screen-qr">
-
+    <!-- Merchant Details -->
     <div class="card">
-      <div class="qr-wrapper">
-
-        <div class="qr-amount-badge">
-          <span class="rs">₹</span><span id="qr-amount-label">0</span>
+        <div class="card-header">
+            <span>Merchant Details</span>
+            <div class="pill-dot green"></div>
         </div>
-
-        <div class="qr-image-container">
-          <img id="qr-image" src="" alt="UPI QR Code">
+        <div class="merchant-profile">
+            <div class="m-avatar" id="merchant-avatar">S</div>
+            <div class="m-info">
+                <h3 id="merchant-name-display">Merchant Name <span class="badge safe" style="font-size:10px; padding:2px 8px;">✓ Verified</span></h3>
+                <p class="merchant-vpa">vpa@okaxis</p>
+            </div>
         </div>
-
-        <div class="waiting-indicator">
-          <div class="pulse-ring"></div>
-          <span>Waiting for payment...</span>
-        </div>
-
-        <div style="width:100%">
-          <div class="timer-bar-wrapper">
-            <div class="timer-bar" id="timer-bar"></div>
-          </div>
-          <div class="timer-label" id="timer-label">Expires in 5:00</div>
-        </div>
-
-      </div>
     </div>
 
-    <!-- Demo Controls (shown only in demo mode) -->
-    <div class="demo-box" id="demo-controls" style="display:none;">
-      <div class="demo-title">🧪 Demo — Simulate Payment</div>
-      <div class="demo-buttons">
-        <button class="btn-demo success" id="btn-demo-success">✓ Pay Correct Amount</button>
-        <button class="btn-demo fraud" id="btn-demo-fraud">✗ Pay ₹1 (Fraud)</button>
-      </div>
+    <!-- History -->
+    <div class="card">
+        <div class="card-header">
+            <span>Recent Transactions</span>
+            <span id="refresh-history" style="cursor:pointer; color:var(--text-secondary); font-size:16px;">↻</span>
+        </div>
+        <div class="history-list" id="history-list">
+            <div style="text-align:center; color:var(--text-secondary); font-size:13px; padding:20px;">No transactions yet</div>
+        </div>
     </div>
-
-    <button class="btn-cancel" id="btn-cancel">Cancel & Start Over</button>
 
   </div>
 
+  <!-- RIGHT COLUMN (ACTION CARDS) -->
+  <div class="right-col">
+    
+    <!-- AMOUNT SCREEN -->
+    <div class="card screen active" id="screen-amount">
+        <div class="card-header" style="margin-bottom:12px;">
+            <span style="letter-spacing:1px;">BILL AMOUNT</span>
+            <span>•••</span>
+        </div>
+        
+        <div class="display-box">
+            <span class="currency">₹</span>
+            <span class="amount-val placeholder" id="amount-display">0</span>
+        </div>
+
+        <div class="numpad" id="numpad">
+            <button class="key" data-val="1">1</button>
+            <button class="key" data-val="2">2</button>
+            <button class="key" data-val="3">3</button>
+            <button class="key" data-val="4">4</button>
+            <button class="key" data-val="5">5</button>
+            <button class="key" data-val="6">6</button>
+            <button class="key" data-val="7">7</button>
+            <button class="key" data-val="8">8</button>
+            <button class="key" data-val="9">9</button>
+            <button class="key" data-val=".">.</button>
+            <button class="key" data-val="0">0</button>
+            <button class="key action-key" data-val="back">⌫</button>
+        </div>
+
+        <button class="btn-pay" id="btn-generate" disabled>Proceed to Pay ₹0</button>
+    </div>
+
+    <!-- QR SCREEN -->
+    <div class="card screen" id="screen-qr">
+        <div class="card-header">
+            <span>AWAITING PAYMENT</span>
+            <span style="color:var(--saffron); font-weight:600;" id="qr-amount-label">₹0</span>
+        </div>
+        
+        <div class="qr-container">
+            <div class="qr-box">
+                <img id="qr-image" src="" alt="UPI QR Code">
+            </div>
+            
+            <div class="timer-wrap">
+                <div class="timer-bar-bg"><div class="timer-bar" id="timer-bar"></div></div>
+                <div class="timer-text" id="timer-label">Expires in 5:00</div>
+            </div>
+        </div>
+        
+        <!-- Demo Controls -->
+        <div id="demo-controls" style="display:none; width:100%;">
+            <div style="font-size:11px; color:#c09000; letter-spacing:1px; margin-bottom:8px; text-align:center;">🧪 SIMULATE DEMO PAYMENT</div>
+            <div class="demo-actions">
+                <button class="btn-demo success" id="btn-demo-success">✓ Exact Amount</button>
+                <button class="btn-demo fraud" id="btn-demo-fraud">✗ Pay ₹1 (Fraud)</button>
+            </div>
+        </div>
+        
+        <button class="btn-cancel" id="btn-cancel">Cancel Transaction</button>
+    </div>
+
+  </div>
+
+</main>
+
+
+<!-- LOGIN MODAL -->
+<div id="login-modal">
+  <div class="login-card">
+    <h2>Access Terminal</h2>
+    <p>Enter your business name to open your secure merchant session.</p>
+    <input type="text" id="login-merchant-name" placeholder="E.g. Sharma Kirana Store" autocomplete="off">
+    <button class="login-btn" id="btn-login">Open Terminal</button>
+  </div>
 </div>
 
-<!-- SCREEN 3: Result (Full Screen Overlay) -->
+<!-- RESULT OVERLAY -->
 <div id="screen-result">
-  <div class="result-icon" id="result-icon">✓</div>
-  <div class="result-amount" id="result-amount">₹450</div>
-  <div class="result-label" id="result-label">Payment Confirmed</div>
-  <div class="result-detail" id="result-detail">Transaction ID: TXN123456</div>
-  <a id="result-receipt-link" href="#" target="_blank" style="display:none; color:white; border:1px solid rgba(255,255,255,0.4); padding:8px 16px; border-radius:20px; text-decoration:none; font-size:14px; margin-top:10px;">Download Receipt</a>
-  <div class="result-auto-reset" id="result-countdown" style="margin-top:20px;">Resetting in 5s...</div>
+    <div class="result-box">
+        <div class="res-icon" id="result-icon">✓</div>
+        <div class="res-amt" id="result-amount">₹0</div>
+        <div class="res-msg" id="result-label">Payment Confirmed</div>
+        <div class="res-det" id="result-detail">TXN ID: ---</div>
+        
+        <a id="result-receipt-link" href="#" target="_blank" class="res-receipt">Download PDF Receipt</a>
+        <div class="res-countdown" id="result-countdown">Resetting in 6s...</div>
+    </div>
 </div>
+
 
 <script>
 // ─────────────────────────────────────────────
-// STATE
+// STATE & INIT
 // ─────────────────────────────────────────────
 let MERCHANT_ID = localStorage.getItem('upiguard_merchant_id');
 let MERCHANT_NAME = localStorage.getItem('upiguard_merchant_name');
@@ -642,391 +462,12 @@ let currentQrId = null;
 let currentAmount = 0;
 let timerInterval = null;
 let isDemoMode = false;
-let resetTimeout = null;
 
-// ─────────────────────────────────────────────
-// WEBSOCKET & OFFLINE QUEUE
-// ─────────────────────────────────────────────
 const socket = io();
 let isConnected = false;
 let messageQueue = [];
 
-socket.on('connect', () => {
-  isConnected = true;
-  socket.emit('join', { merchant_id: MERCHANT_ID });
-  updateConnectionUI(true);
-  
-  // Process queued offline simulate payment actions if any
-  while(messageQueue.length > 0) {
-    let queuedAction = messageQueue.shift();
-    queuedAction();
-  }
-});
-
-socket.on('disconnect', () => updateConnectionUI(false));
-
-socket.on('payment_result', (data) => {
-  handlePaymentResult(data);
-});
-
-function updateConnectionUI(connected) {
-  isConnected = connected;
-  document.getElementById('conn-dot').className = 'dot' + (connected ? ' connected' : '');
-  document.getElementById('conn-label').textContent = connected ? 'Live' : 'Offline';
-  document.getElementById('conn-badge').textContent = connected ? 'Live' : 'Offline';
-  document.getElementById('conn-badge').className = 'connection-badge' + (connected ? ' live' : '');
-}
-
-// ─────────────────────────────────────────────
-// NUMPAD
-// ─────────────────────────────────────────────
-document.getElementById('numpad').addEventListener('click', (e) => {
-  const key = e.target.closest('.key');
-  if (!key) return;
-
-  const val = key.dataset.val;
-
-  // Key press animation
-  key.classList.add('pressed');
-  setTimeout(() => key.classList.remove('pressed'), 120);
-
-  if (val === 'back') {
-    amountStr = amountStr.slice(0, -1);
-  } else if (val === '.') {
-    if (!amountStr.includes('.')) {
-      amountStr += amountStr === '' ? '0.' : '.';
-    }
-  } else {
-    // Limit to 7 digits before decimal
-    const parts = amountStr.split('.');
-    if (parts[0].length >= 6 && !amountStr.includes('.')) return;
-    // Limit to 2 decimal places
-    if (parts[1] !== undefined && parts[1].length >= 2) return;
-    amountStr += val;
-  }
-
-  updateAmountDisplay();
-});
-
-function updateAmountDisplay() {
-  const display = document.getElementById('amount-display');
-  const btn = document.getElementById('btn-generate');
-
-  if (amountStr === '' || amountStr === '0' || parseFloat(amountStr) === 0) {
-    display.textContent = '0';
-    display.className = 'amount-value placeholder';
-    btn.disabled = true;
-  } else {
-    display.textContent = amountStr;
-    display.className = 'amount-value';
-    btn.disabled = false;
-  }
-}
-
-// ─────────────────────────────────────────────
-// GENERATE QR
-// ─────────────────────────────────────────────
-document.getElementById('btn-generate').addEventListener('click', async () => {
-  const amount = parseFloat(amountStr);
-  if (!amount || amount <= 0) return;
-
-  const btn = document.getElementById('btn-generate');
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span>Generating...';
-
-  try {
-    const res = await fetch('/api/create-qr', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        amount: amount,
-        merchant_id: MERCHANT_ID,
-        merchant_name: MERCHANT_NAME
-      })
-    });
-
-    const data = await res.json();
-
-    if (data.success) {
-      currentQrId = data.qr_id;
-      currentAmount = amount;
-      isDemoMode = data.demo_mode || false;
-
-      // Set QR image
-      const img = document.getElementById('qr-image');
-      if (data.image_b64) {
-        img.src = data.image_b64;
-      } else if (data.image_url) {
-        img.src = data.image_url;
-      }
-
-      // Set amount label
-      document.getElementById('qr-amount-label').textContent = amount.toLocaleString('en-IN');
-
-      // Show demo controls if in demo mode
-      document.getElementById('demo-controls').style.display = isDemoMode ? 'block' : 'none';
-
-      // Set up demo buttons
-      document.getElementById('btn-demo-success').textContent = `✓ Pay ₹${amount} (Correct)`;
-      document.getElementById('btn-demo-fraud').textContent = `✗ Pay ₹1 (Fraud)`;
-
-      // Switch screen
-      showScreen('screen-qr');
-
-      // Start timer (5 minutes)
-      startTimer(data.expires_in || 300);
-    }
-  } catch (err) {
-    console.error(err);
-  }
-
-  btn.disabled = false;
-  btn.innerHTML = 'Generate QR Code';
-});
-
-// ─────────────────────────────────────────────
-// DEMO SIMULATE
-// ─────────────────────────────────────────────
-document.getElementById('btn-demo-success').addEventListener('click', async () => {
-  await simulatePayment(currentAmount);
-});
-
-document.getElementById('btn-demo-fraud').addEventListener('click', async () => {
-  await simulatePayment(1);
-});
-
-async function simulatePayment(amount) {
-  // Offline state handler
-  if (!isConnected && !isDemoMode) {
-     alert("You are currently offline. Payment will be queued.");
-     messageQueue.push(() => simulatePayment(amount));
-     return;
-  }
-  
-  try {
-    const res = await fetch('/api/simulate-payment', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ qr_id: currentQrId, amount })
-    });
-    const data = await res.json();
-    // Handle directly in case WebSocket drops
-    if (data.result) {
-      handlePaymentResult(data.result);
-    }
-  } catch (err) {
-    console.error('Payment simulation error:', err);
-    if (!isConnected) {
-        messageQueue.push(() => simulatePayment(amount));
-    }
-  }
-}
-
-// ─────────────────────────────────────────────
-// PAYMENT RESULT HANDLER
-// ─────────────────────────────────────────────
-function handlePaymentResult(data) {
-  clearInterval(timerInterval);
-
-  const resultScreen = document.getElementById('screen-result');
-  const icon = document.getElementById('result-icon');
-  const amountEl = document.getElementById('result-amount');
-  const label = document.getElementById('result-label');
-  const detail = document.getElementById('result-detail');
-  const countdown = document.getElementById('result-countdown');
-
-  if (data.status === 'SUCCESS') {
-    resultScreen.className = 'active success-state';
-    icon.textContent = '✓';
-    amountEl.textContent = `₹${data.paid.toLocaleString('en-IN')}`;
-    label.textContent = 'Payment Confirmed';
-    detail.textContent = data.transaction_id
-      ? `Transaction: ${data.transaction_id}`
-      : 'Amount verified • Safe to hand over goods';
-      
-    const receiptLink = document.getElementById('result-receipt-link');
-    receiptLink.style.display = 'inline-block';
-    receiptLink.href = `/api/receipt/${currentQrId}?txn_id=${data.transaction_id || ''}`;
-
-    playSound('success');
-
-  } else {
-    resultScreen.className = 'active fail-state';
-    icon.textContent = '✗';
-    amountEl.textContent = `₹${data.paid.toLocaleString('en-IN')} Received`;
-    label.textContent = 'AMOUNT MISMATCH — DO NOT GIVE GOODS';
-    detail.textContent = `Expected ₹${data.expected.toLocaleString('en-IN')} • Got ₹${data.paid.toLocaleString('en-IN')}`;
-    document.getElementById('result-receipt-link').style.display = 'none';
-
-    playSound('fraud');
-  }
-
-  // Auto-reset after 6 seconds
-  let sec = 6;
-  const tick = setInterval(() => {
-    sec--;
-    countdown.textContent = `Resetting in ${sec}s...`;
-    if (sec <= 0) {
-      clearInterval(tick);
-      resetToStart();
-    }
-  }, 1000);
-}
-
-// ─────────────────────────────────────────────
-// SOUNDS (Web Audio API — no files needed)
-// ─────────────────────────────────────────────
-function playSound(type) {
-  try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-
-    if (type === 'success') {
-      // Pleasant ascending chime
-      [523, 659, 784, 1047].forEach((freq, i) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.frequency.value = freq;
-        osc.type = 'sine';
-        const t = ctx.currentTime + i * 0.12;
-        gain.gain.setValueAtTime(0.3, t);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
-        osc.start(t);
-        osc.stop(t + 0.4);
-      });
-    } else {
-      // Harsh alert buzz
-      [200, 150, 200, 150].forEach((freq, i) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.frequency.value = freq;
-        osc.type = 'sawtooth';
-        const t = ctx.currentTime + i * 0.18;
-        gain.gain.setValueAtTime(0.4, t);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
-        osc.start(t);
-        osc.stop(t + 0.15);
-      });
-    }
-  } catch(e) {}
-}
-
-// ─────────────────────────────────────────────
-// TIMER
-// ─────────────────────────────────────────────
-function startTimer(seconds) {
-  const bar = document.getElementById('timer-bar');
-  const label = document.getElementById('timer-label');
-  let remaining = seconds;
-
-  bar.style.width = '100%';
-
-  timerInterval = setInterval(() => {
-    remaining--;
-    const pct = (remaining / seconds) * 100;
-    bar.style.width = pct + '%';
-
-    const m = Math.floor(remaining / 60);
-    const s = remaining % 60;
-    label.textContent = `Expires in ${m}:${s.toString().padStart(2,'0')}`;
-
-    if (remaining <= 0) {
-      clearInterval(timerInterval);
-      label.textContent = 'QR Expired';
-      bar.style.background = '#ccc';
-      // Auto return after 2s
-      setTimeout(resetToStart, 2000);
-    }
-  }, 1000);
-}
-
-// ─────────────────────────────────────────────
-// NAVIGATION
-// ─────────────────────────────────────────────
-function showScreen(id) {
-  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-  document.getElementById(id).classList.add('active');
-}
-
-function resetToStart() {
-  clearInterval(timerInterval);
-  document.getElementById('screen-result').className = '';
-  showScreen('screen-amount');
-  amountStr = '';
-  updateAmountDisplay();
-  currentQrId = null;
-}
-
-document.getElementById('btn-cancel').addEventListener('click', () => {
-  clearInterval(timerInterval);
-  resetToStart();
-});
-
-// ─────────────────────────────────────────────
-// HISTORY
-// ─────────────────────────────────────────────
-async function loadHistory() {
-  if (!MERCHANT_ID) return;
-  try {
-    const res = await fetch(`/api/history?merchant_id=${MERCHANT_ID}`);
-    const data = await res.json();
-    if(data.success) {
-      const list = document.getElementById('history-list');
-      if(data.history.length === 0) {
-        list.innerHTML = '<div style="text-align:center; color:var(--dim); font-size:12px; padding:10px;">No transactions yet</div>';
-        return;
-      }
-      
-      list.innerHTML = '';
-      // Reverse to show newest first
-      data.history.slice().reverse().forEach(txn => {
-        const timeStr = txn.timestamp ? new Date(txn.timestamp*1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '';
-        const isSuccess = txn.status === 'SUCCESS';
-        // Fallback for older missing qr_ids in history
-        const qrIdParam = txn.qr_id || 'dummy';
-        const receiptHtml = isSuccess ? `<a href="/api/receipt/${qrIdParam}?txn_id=${txn.transaction_id || ''}" target="_blank" style="color:var(--saffron); text-decoration:none; display:inline-block; margin-top:4px;">📥 Receipt</a>` : '';
-        
-        list.innerHTML += `
-          <div class="history-item ${isSuccess ? 'success' : 'mismatch'}">
-            <div>
-              <div style="font-weight:bold; color:${isSuccess ? 'var(--green)' : 'var(--red)'}">₹${txn.paid} ${isSuccess ? '✓' : '✗'}</div>
-              <div style="font-size:11px; color:var(--dim)">Expected: ₹${txn.expected}</div>
-              ${receiptHtml}
-            </div>
-            <div style="text-align:right">
-              <div class="history-time">${timeStr}</div>
-              <div style="font-size:10px; color:#aaa; font-family:monospace;">${txn.transaction_id ? txn.transaction_id.substring(0,8)+'...' : 'auto-gen'}</div>
-            </div>
-          </div>
-        `;
-      });
-    }
-  } catch(e) {
-    console.error("Could not load history", e);
-  }
-}
-
-document.getElementById('refresh-history').addEventListener('click', loadHistory);
-
-// ─────────────────────────────────────────────
-// INIT & LOGIN
-// ─────────────────────────────────────────────
-function initMerchant() {
-  document.getElementById('merchant-name-display').textContent = MERCHANT_NAME;
-  document.getElementById('merchant-avatar').textContent = MERCHANT_NAME[0].toUpperCase();
-  // VPA username fallback visualization
-  const vpaPrefix = MERCHANT_NAME.toLowerCase().replace(/[^a-z0-9]/g, '').substring(0, 10);
-  document.querySelector('.merchant-vpa').textContent = `${vpaPrefix}@okaxis`;
-  
-  if (isConnected) {
-    socket.emit('join', { merchant_id: MERCHANT_ID }); // Rejoin correct room
-  }
-  loadHistory();
-}
-
+// Init UI based on auth state
 if (!MERCHANT_ID || !MERCHANT_NAME) {
   document.getElementById('login-modal').style.display = 'flex';
 } else {
@@ -1046,6 +487,270 @@ document.getElementById('btn-login').addEventListener('click', () => {
   }
 });
 
+function initMerchant() {
+  document.getElementById('merchant-name-display').innerHTML = `${MERCHANT_NAME} <span class="badge safe" style="font-size:10px; padding:2px 8px;">✓ Verified</span>`;
+  document.getElementById('merchant-avatar').textContent = MERCHANT_NAME[0].toUpperCase();
+  const vpaPrefix = MERCHANT_NAME.toLowerCase().replace(/[^a-z0-9]/g, '').substring(0, 10);
+  document.querySelectorAll('.merchant-vpa').forEach(el => el.textContent = `${vpaPrefix}@okaxis`);
+  
+  if (isConnected) socket.emit('join', { merchant_id: MERCHANT_ID });
+  loadHistory();
+}
+
+// ─────────────────────────────────────────────
+// WEBSOCKETS
+// ─────────────────────────────────────────────
+socket.on('connect', () => {
+  isConnected = true;
+  document.getElementById('conn-label').textContent = 'Live Session';
+  document.querySelector('.pill-dot').classList.add('green');
+  
+  if(MERCHANT_ID) socket.emit('join', { merchant_id: MERCHANT_ID });
+  while(messageQueue.length > 0) messageQueue.shift()();
+});
+
+socket.on('disconnect', () => {
+  isConnected = false;
+  document.getElementById('conn-label').textContent = 'Offline';
+  document.querySelector('.pill-dot').classList.remove('green');
+});
+
+socket.on('payment_result', handlePaymentResult);
+
+// ─────────────────────────────────────────────
+// NUMPAD LOGIC
+// ─────────────────────────────────────────────
+document.getElementById('numpad').addEventListener('click', (e) => {
+  const key = e.target.closest('.key');
+  if (!key) return;
+  const val = key.dataset.val;
+
+  if (val === 'back') {
+    amountStr = amountStr.slice(0, -1);
+  } else if (val === '.') {
+    if (!amountStr.includes('.')) amountStr += amountStr === '' ? '0.' : '.';
+  } else {
+    const parts = amountStr.split('.');
+    if (parts[0].length >= 6 && !amountStr.includes('.')) return;
+    if (parts[1] !== undefined && parts[1].length >= 2) return;
+    amountStr += val;
+  }
+  updateAmountDisplay();
+});
+
+function updateAmountDisplay() {
+  const display = document.getElementById('amount-display');
+  const btn = document.getElementById('btn-generate');
+
+  if (!amountStr || amountStr === '0' || parseFloat(amountStr) === 0) {
+    display.textContent = '0';
+    display.className = 'amount-val placeholder';
+    btn.disabled = true;
+    btn.textContent = 'Proceed to Pay ₹0';
+  } else {
+    display.textContent = amountStr;
+    display.className = 'amount-val';
+    btn.disabled = false;
+    btn.textContent = `Proceed to Pay ₹${amountStr}`;
+  }
+}
+
+// ─────────────────────────────────────────────
+// QR GENERATION
+// ─────────────────────────────────────────────
+document.getElementById('btn-generate').addEventListener('click', async () => {
+  const amount = parseFloat(amountStr);
+  if (!amount || amount <= 0) return;
+
+  const btn = document.getElementById('btn-generate');
+  btn.disabled = true; btn.textContent = 'Generating...';
+
+  try {
+    const res = await fetch('/api/create-qr', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amount, merchant_id: MERCHANT_ID, merchant_name: MERCHANT_NAME })
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      currentQrId = data.qr_id;
+      currentAmount = amount;
+      isDemoMode = data.demo_mode || false;
+      document.getElementById('qr-image').src = data.image_b64 || data.image_url;
+      document.getElementById('qr-amount-label').textContent = `₹${amount}`;
+      
+      document.getElementById('demo-controls').style.display = isDemoMode ? 'block' : 'none';
+      if(isDemoMode) document.getElementById('btn-demo-success').textContent = `✓ EXACT ₹${amount}`;
+      
+      switchScreen('screen-qr');
+      startTimer(data.expires_in || 300);
+    }
+  } catch (e) { console.error(e); }
+  
+  btn.disabled = false; updateAmountDisplay();
+});
+
+function switchScreen(id) {
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+}
+
+// ─────────────────────────────────────────────
+// DEMO SIMULATION
+// ─────────────────────────────────────────────
+document.getElementById('btn-demo-success').addEventListener('click', () => simulatePayment(currentAmount));
+document.getElementById('btn-demo-fraud').addEventListener('click', () => simulatePayment(1));
+
+async function simulatePayment(amount) {
+  if (!isConnected && !isDemoMode) {
+     alert("Offline. Action queued.");
+     messageQueue.push(() => simulatePayment(amount));
+     return;
+  }
+  try {
+    const res = await fetch('/api/simulate-payment', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ qr_id: currentQrId, amount })
+    });
+    const data = await res.json();
+    if (data.result) handlePaymentResult(data.result);
+  } catch (err) {
+    if (!isConnected) messageQueue.push(() => simulatePayment(amount));
+  }
+}
+
+// ─────────────────────────────────────────────
+// RESULT HANDLER
+// ─────────────────────────────────────────────
+function handlePaymentResult(data) {
+  clearInterval(timerInterval);
+  const rs = document.getElementById('screen-result');
+  
+  document.getElementById('result-amount').textContent = `₹${data.paid}`;
+  const receiptLnk = document.getElementById('result-receipt-link');
+  
+  if (data.status === 'SUCCESS') {
+    rs.className = 'active success-state';
+    document.getElementById('result-icon').textContent = '✓';
+    document.getElementById('result-label').textContent = 'Secure Transfer Complete';
+    document.getElementById('result-detail').textContent = `TXN: ${data.transaction_id || ''}`;
+    receiptLnk.style.display = 'inline-block';
+    receiptLnk.href = `/api/receipt/${currentQrId}?txn_id=${data.transaction_id || ''}`;
+    playSound('success');
+  } else {
+    rs.className = 'active fail-state';
+    document.getElementById('result-icon').textContent = '✗';
+    document.getElementById('result-label').textContent = 'AMOUNT MISMATCH DETECTED';
+    document.getElementById('result-detail').textContent = `Expected ₹${data.expected} / Got ₹${data.paid}`;
+    receiptLnk.style.display = 'none';
+    playSound('fraud');
+  }
+
+  let sec = 6;
+  const tick = setInterval(() => {
+    sec--; document.getElementById('result-countdown').textContent = `Automated Reset in ${sec}s...`;
+    if (sec <= 0) { clearInterval(tick); resetFlow(); }
+  }, 1000);
+}
+
+function resetFlow() {
+  clearInterval(timerInterval);
+  document.getElementById('screen-result').className = '';
+  switchScreen('screen-amount');
+  amountStr = ''; updateAmountDisplay(); currentQrId = null;
+  loadHistory();
+}
+
+document.getElementById('btn-cancel').addEventListener('click', resetFlow);
+
+// ─────────────────────────────────────────────
+// HISTORY
+// ─────────────────────────────────────────────
+async function loadHistory() {
+  if (!MERCHANT_ID) return;
+  try {
+    const res = await fetch(`/api/history?merchant_id=${MERCHANT_ID}`);
+    const data = await res.json();
+    if(data.success) {
+      const list = document.getElementById('history-list');
+      if(data.history.length === 0) {
+        list.innerHTML = '<div style="text-align:center; color:var(--text-secondary); font-size:13px; padding:20px;">No recent activity</div>';
+        return;
+      }
+      list.innerHTML = '';
+      data.history.slice().reverse().forEach(txn => {
+        const timeStr = txn.timestamp ? new Date(txn.timestamp*1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '';
+        const isSuccess = txn.status === 'SUCCESS';
+        
+        const badgeHTML = isSuccess 
+            ? `<div class="badge safe">🛡 Safe</div>` 
+            : `<div class="badge danger">⚠ Suspicious</div>`;
+            
+        const receiptHtml = isSuccess ? `<a href="/api/receipt/${txn.qr_id||'dummy'}?txn_id=${txn.transaction_id}" target="_blank" class="receipt-link">Receipt ↗</a>` : '';
+        
+        list.innerHTML += `
+          <div class="history-item">
+            <div class="h-left">
+              <div class="h-amt">₹${txn.paid}</div>
+              <div class="h-detail">
+                <div class="name">${MERCHANT_NAME} Customer</div>
+                <div class="sub">
+                    <span>${txn.transaction_id ? txn.transaction_id.substring(0,8) : 'AUTO'}</span>
+                    <span>${timeStr}</span>
+                    ${receiptHtml}
+                </div>
+              </div>
+            </div>
+            <div class="h-right">
+              ${badgeHTML}
+            </div>
+          </div>
+        `;
+      });
+    }
+  } catch(e) {}
+}
+document.getElementById('refresh-history').addEventListener('click', loadHistory);
+
+// ─────────────────────────────────────────────
+// AUDIO & TIMERS
+// ─────────────────────────────────────────────
+function playSound(type) {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (type === 'success') {
+      [523, 659, 784, 1047].forEach((freq, i) => {
+        const osc = ctx.createOscillator(), gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.frequency.value = freq; osc.type = 'sine';
+        const t = ctx.currentTime + i * 0.12;
+        gain.gain.setValueAtTime(0.3, t); gain.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+        osc.start(t); osc.stop(t + 0.4);
+      });
+    } else {
+      [200, 150, 200, 150].forEach((freq, i) => {
+        const osc = ctx.createOscillator(), gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.frequency.value = freq; osc.type = 'sawtooth';
+        const t = ctx.currentTime + i * 0.18;
+        gain.gain.setValueAtTime(0.4, t); gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+        osc.start(t); osc.stop(t + 0.15);
+      });
+    }
+  } catch(e) {}
+}
+
+function startTimer(sec) {
+  const bar = document.getElementById('timer-bar'), lbl = document.getElementById('timer-label');
+  let rem = sec; bar.style.width = '100%';
+  timerInterval = setInterval(() => {
+    rem--; bar.style.width = (rem/sec)*100 + '%';
+    lbl.textContent = `Expires in ${Math.floor(rem/60)}:${(rem%60).toString().padStart(2,'0')}`;
+    if(rem <= 0) { clearInterval(timerInterval); lbl.textContent = 'Expired'; setTimeout(resetFlow, 2000); }
+  }, 1000);
+}
 </script>
 
 </body>
