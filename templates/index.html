@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
   :root {
     --bg-dark: #121212;
@@ -64,6 +65,17 @@
 
   .logo-text { font-size: 18px; font-weight: 600; letter-spacing: 0.5px; }
 
+  /* ── VIEW TOGGLE ── */
+  .view-toggle {
+    display: flex; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 4px; gap: 4px;
+  }
+  .view-btn {
+    padding: 8px 16px; border: none; background: transparent; color: var(--text-secondary);
+    border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; transition: 0.2s;
+  }
+  .view-btn.active { background: var(--card-bg-light); color: white; box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
+  .view-btn:hover:not(.active) { color: white; }
+
   .header-badges { display: flex; gap: 16px; align-items: center; font-size: 12px; font-weight: 500;}
   
   .pill {
@@ -80,17 +92,53 @@
   .pill-dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
 
   /* ── MAIN DASHBOARD ── */
-  .dashboard {
-    flex: 1;
-    width: 100%;
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 32px;
-    display: grid;
-    grid-template-columns: 1fr 400px;
-    gap: 32px;
-    align-items: start;
+  .dashboard-wrapper { flex: 1; width: 100%; max-width: 1200px; margin: 0 auto; padding: 32px; }
+  
+  .dashboard-view.hidden { display: none !important; }
+
+  .terminal-grid { 
+      display: grid;
+      grid-template-columns: 1fr 400px; 
+      gap: 32px; 
+      align-items: start; 
   }
+  
+  /* ── ANALYTICS VIEW ── */
+  .analytics-grid { 
+      display: grid;
+      grid-template-columns: 1fr; 
+      gap: 24px; 
+  }
+  
+  /* ── AUDIT VIEW ── */
+  .audit-grid { 
+      display: grid;
+      grid-template-columns: 1fr; 
+      gap: 24px; 
+  }
+  
+  .filter-bar { display: flex; gap: 16px; background: var(--card-bg); padding: 16px 24px; border-radius: 16px; border: 1px solid var(--border); }
+  .filter-select { background: #0a0a0a; color: white; border: 1px solid var(--border); padding: 8px 16px; border-radius: 8px; font-size: 13px; outline: none; }
+  
+  .data-table-container { background: var(--card-bg); border-radius: 16px; border: 1px solid var(--border); overflow-x: auto; }
+  .data-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
+  .data-table th { padding: 16px 24px; font-weight: 500; color: var(--text-secondary); border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .data-table td { padding: 16px 24px; border-bottom: 1px solid var(--border); color: var(--text-primary); }
+  .data-table tr:hover { background: #252525; }
+  .data-table .mono { font-family: 'JetBrains Mono', monospace; }
+  .data-table .action-cell { font-weight: 600; }
+  
+  .metric-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+  .metric-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 16px; padding: 24px; display: flex; flex-direction: column; gap: 8px; }
+  .metric-label { font-size: 13px; color: var(--text-secondary); font-weight: 500; }
+  .metric-value { font-size: 32px; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+  .metric-value.success { color: var(--green); }
+  .metric-value.danger { color: var(--red); }
+  
+  .charts-row { display: grid; grid-template-columns: 2fr 1fr; gap: 24px; }
+  .chart-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 16px; padding: 24px; }
+  .chart-header { font-size: 15px; font-weight: 600; margin-bottom: 20px; color: white; }
+  .chart-container { position: relative; height: 300px; width: 100%; }
 
   /* ── CARDS ── */
   .card {
@@ -164,6 +212,7 @@
   .h-left { display: flex; align-items: center; gap: 16px; }
   .h-amt { font-size: 18px; font-weight: 600; font-family: 'JetBrains Mono', monospace; width: 70px; }
   .h-detail .name { font-size: 15px; font-weight: 500; margin-bottom: 4px; color: var(--text-primary); }
+  .h-detail .name .upi-tag { font-size: 12px; color: var(--text-secondary); font-weight: normal; margin-left: 8px; }
   .h-detail .sub { font-size: 12px; color: var(--text-secondary); display:flex; gap:12px; align-items:center;}
   .h-right { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
   
@@ -250,7 +299,13 @@
   #screen-result.fail-state .res-icon { color: var(--red); }
   
   .res-amt { font-size: 48px; font-family: 'JetBrains Mono', monospace; font-weight: 700; color: white; margin-bottom: 8px;}
-  .res-msg { font-size: 18px; font-weight: 500; color: var(--text-secondary); margin-bottom: 24px;}
+  .res-msg { font-size: 18px; font-weight: 500; color: var(--text-secondary); margin-bottom: 16px;}
+  
+  .fraud-reasons-box { display: none; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); padding: 12px; border-radius: 8px; margin-bottom: 24px; text-align: left; }
+  #screen-result.fail-state .fraud-reasons-box { display: block; }
+  .fraud-reason-item { color: var(--red); font-size: 13px; font-weight: 500; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
+  .fraud-reason-item::before { content: '⚠'; }
+
   .res-det { font-size: 13px; font-family: 'JetBrains Mono', monospace; color: #777; background: #111; padding: 12px; border-radius: 8px; margin-bottom: 24px;}
   
   .res-receipt {
@@ -282,6 +337,57 @@
   }
   .login-btn:hover { background: var(--saffron-hover); }
 
+  /* ── RESPONSIVE DESIGN (Mobile & Tablet) ── */
+  @media (max-width: 900px) {
+    .terminal-grid {
+      grid-template-columns: 1fr;
+    }
+    .left-col { order: 2; }
+    .right-col { order: 1; }
+    
+    .charts-row { grid-template-columns: 1fr; }
+  }
+
+  @media (max-width: 600px) {
+    header { padding: 12px 16px; flex-wrap: wrap; gap: 12px; justify-content: center; }
+    .view-toggle { width: 100%; }
+    .view-btn { flex: 1; text-align: center; }
+    
+    .dashboard-wrapper { padding: 16px 12px; }
+    .metric-row { grid-template-columns: 1fr; gap: 16px; }
+    .logo-text { font-size: 15px; }
+    .pill { padding: 5px 10px; font-size: 11px; }
+
+    .dashboard { padding: 12px; gap: 16px; }
+    .card { padding: 16px; gap: 16px; }
+    
+    .display-box { height: 75px; padding: 16px; }
+    .amount-val { font-size: 32px; }
+    .currency { font-size: 20px; }
+    .key { padding: 12px; font-size: 20px; }
+    .btn-pay { padding: 14px; font-size: 15px; margin-top: 12px; }
+
+    .m-avatar { width: 40px; height: 40px; font-size: 18px; }
+    .m-info h3 { font-size: 16px; }
+    .m-info p { font-size: 12px; }
+
+    .history-item { flex-direction: column; align-items: flex-start; gap: 12px; padding: 16px; }
+    .h-left { width: 100%; border-bottom: 1px solid #333; padding-bottom: 8px; }
+    .h-amt { font-size: 16px; width: 60px; }
+    .h-detail .name { font-size: 14px; }
+    .h-detail .sub { font-size: 11px; flex-wrap: wrap; }
+    
+    .h-right { width: 100%; align-items: flex-start; }
+    .badge { padding: 4px 10px; font-size: 11px; }
+    
+    .qr-box { width: 200px; height: 200px; }
+    
+    #screen-result .result-box { padding: 32px 20px; border-radius: 20px; }
+    .res-icon { font-size: 56px; margin-bottom: 12px; }
+    .res-amt { font-size: 32px; }
+    .res-msg { font-size: 15px; margin-bottom: 16px; }
+    .res-det { margin-bottom: 16px; font-size: 12px; padding: 10px; }
+  }
 </style>
 </head>
 <body>
@@ -293,6 +399,12 @@
     <div class="logo-text">UPIGuard Terminal</div>
   </div>
   
+  <div class="view-toggle">
+    <button class="view-btn active" data-view="terminal">Terminal</button>
+    <button class="view-btn" data-view="analytics">Analytics Dashboard</button>
+    <button class="view-btn" data-view="audit">Audit Trail</button>
+  </div>
+  
   <div class="header-badges">
     <div class="pill">
       <div class="pill-dot green"></div>
@@ -301,11 +413,13 @@
   </div>
 </header>
 
-<!-- DASHBOARD -->
-<main class="dashboard">
+<!-- DASHBOARD WRAPPER -->
+<main class="dashboard-wrapper">
   
-  <!-- LEFT COLUMN -->
-  <div class="left-col">
+  <!-- TERMINAL VIEW -->
+  <div id="view-terminal" class="dashboard-view terminal-grid">
+    <!-- LEFT COLUMN -->
+    <div class="left-col">
 
     <!-- Merchant Details -->
     <div class="card">
@@ -389,6 +503,7 @@
         <!-- Demo Controls -->
         <div id="demo-controls" style="display:none; width:100%;">
             <div style="font-size:11px; color:#c09000; letter-spacing:1px; margin-bottom:8px; text-align:center;">🧪 SIMULATE DEMO PAYMENT</div>
+            <input type="text" id="demo-upi-id" value="demo@upi" placeholder="Customer UPI ID" style="width:100%; padding:10px; background:#0a0a0a; border:1px solid var(--border); border-radius:8px; color:white; font-size:13px; text-align:center; font-family:'JetBrains Mono', monospace; margin-bottom:8px;">
             <div class="demo-actions">
                 <button class="btn-demo success" id="btn-demo-success">✓ Exact Amount</button>
                 <button class="btn-demo fraud" id="btn-demo-fraud">✗ Pay ₹1 (Fraud)</button>
@@ -397,11 +512,85 @@
         
         <button class="btn-cancel" id="btn-cancel">Cancel Transaction</button>
     </div>
+  </div> <!-- /RIGHT COLUMN -->
+</div> <!-- /TERMINAL VIEW -->
 
-  </div>
+  <!-- ANALYTICS VIEW -->
+  <div id="view-analytics" class="dashboard-view analytics-grid hidden">
+    
+    <!-- Metrics Row -->
+    <div class="metric-row">
+        <div class="metric-card">
+            <div class="metric-label">TOTAL TRANSACTIONS</div>
+            <div class="metric-value" id="stat-total">0</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">SUCCESS RATE</div>
+            <div class="metric-value success" id="stat-rate">0%</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">FRAUD ATTEMPTS BLOCKED</div>
+            <div class="metric-value danger" id="stat-fraud">0</div>
+        </div>
+    </div>
+    
+    <!-- Charts Row -->
+    <div class="charts-row">
+        <div class="chart-card">
+            <div class="chart-header">Revenue (Last 7 Days)</div>
+            <div class="chart-container">
+                <canvas id="revenueChart"></canvas>
+            </div>
+        </div>
+        <div class="chart-card">
+            <div class="chart-header">Peak Payment Hours</div>
+            <div class="chart-container">
+                <canvas id="hoursChart"></canvas>
+            </div>
+        </div>
+    </div>
+    
+  </div> <!-- /ANALYTICS VIEW -->
+
+  <!-- AUDIT TRAIL VIEW -->
+  <div id="view-audit" class="dashboard-view audit-grid hidden">
+    
+    <div class="filter-bar">
+        <select class="filter-select" id="audit-filter-action">
+            <option value="ALL">All Actions</option>
+            <option value="QR_GENERATED">QR Generated</option>
+            <option value="PAYMENT_RECEIVED">Payment Received</option>
+            <option value="FRAUD_FLAGGED">Fraud Flagged</option>
+        </select>
+        <select class="filter-select" id="audit-filter-status">
+            <option value="ALL">All Statuses</option>
+            <option value="SUCCESS">Success</option>
+            <option value="SUSPICIOUS">Suspicious</option>
+            <option value="INFO">Info</option>
+        </select>
+    </div>
+
+    <div class="data-table-container">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Action</th>
+                    <th>UPI ID</th>
+                    <th>Amount</th>
+                    <th>Status</th>
+                    <th>Details</th>
+                </tr>
+            </thead>
+            <tbody id="audit-table-body">
+                <tr><td colspan="6" style="text-align:center; color:#888;">Loading logs...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+  </div> <!-- /AUDIT VIEW -->
 
 </main>
-
 
 <!-- LOGIN MODAL -->
 <div id="login-modal">
@@ -419,6 +608,9 @@
         <div class="res-icon" id="result-icon">✓</div>
         <div class="res-amt" id="result-amount">₹0</div>
         <div class="res-msg" id="result-label">Payment Confirmed</div>
+        
+        <div class="fraud-reasons-box" id="result-fraud-reasons"></div>
+
         <div class="res-det" id="result-detail">TXN ID: ---</div>
         
         <a id="result-receipt-link" href="#" target="_blank" class="res-receipt">Download PDF Receipt</a>
@@ -443,6 +635,18 @@ let isDemoMode = false;
 const socket = io();
 let isConnected = false;
 let messageQueue = [];
+
+let revenueChartInstance = null;
+let hoursChartInstance = null;
+
+// Init Chart.js Defaults
+Chart.defaults.color = '#a0a0a0';
+Chart.defaults.font.family = "'Inter', sans-serif";
+Chart.defaults.plugins.tooltip.backgroundColor = '#1c1c1c';
+Chart.defaults.plugins.tooltip.titleColor = '#fff';
+Chart.defaults.plugins.tooltip.bodyColor = '#a0a0a0';
+Chart.defaults.plugins.tooltip.borderColor = '#333';
+Chart.defaults.plugins.tooltip.borderWidth = 1;
 
 // Init UI based on auth state
 if (!MERCHANT_ID || !MERCHANT_NAME) {
@@ -492,7 +696,33 @@ socket.on('disconnect', () => {
   document.querySelector('.pill-dot').classList.remove('green');
 });
 
-socket.on('payment_result', handlePaymentResult);
+socket.on('payment_result', (data) => {
+    handlePaymentResult(data);
+    // Refresh analytics if we are currently looking at that view
+    if (document.getElementById('view-analytics').classList.contains('active')) {
+        loadAnalytics();
+    }
+});
+
+// ─────────────────────────────────────────────
+// VIEW TOGGLE LOGIC
+// ─────────────────────────────────────────────
+document.querySelectorAll('.view-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+        document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
+        e.target.classList.add('active');
+        
+        const targetView = e.target.dataset.view;
+        document.querySelectorAll('.dashboard-view').forEach(v => v.classList.add('hidden'));
+        document.getElementById(`view-${targetView}`).classList.remove('hidden');
+        
+        if (targetView === 'analytics') {
+            loadAnalytics();
+        } else if (targetView === 'audit') {
+            loadAuditLogs();
+        }
+    });
+});
 
 // ─────────────────────────────────────────────
 // NUMPAD LOGIC
@@ -580,6 +810,8 @@ document.getElementById('btn-demo-success').addEventListener('click', () => simu
 document.getElementById('btn-demo-fraud').addEventListener('click', () => simulatePayment(1));
 
 async function simulatePayment(amount) {
+  const upiId = document.getElementById('demo-upi-id').value.trim() || 'demo@upi';
+  
   if (!isConnected && !isDemoMode) {
      alert("Offline. Action queued.");
      messageQueue.push(() => simulatePayment(amount));
@@ -589,7 +821,7 @@ async function simulatePayment(amount) {
     const res = await fetch('/api/simulate-payment', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ qr_id: currentQrId, amount })
+      body: JSON.stringify({ qr_id: currentQrId, amount, upi_id: upiId })
     });
     const data = await res.json();
     if (data.result) handlePaymentResult(data.result);
@@ -604,23 +836,44 @@ async function simulatePayment(amount) {
 function handlePaymentResult(data) {
   clearInterval(timerInterval);
   const rs = document.getElementById('screen-result');
+  const reasonsBox = document.getElementById('result-fraud-reasons');
   
   document.getElementById('result-amount').textContent = `₹${data.paid}`;
   const receiptLnk = document.getElementById('result-receipt-link');
+  
+  // Clear previous reasons
+  reasonsBox.innerHTML = '';
   
   if (data.status === 'SUCCESS') {
     rs.className = 'active success-state';
     document.getElementById('result-icon').textContent = '✓';
     document.getElementById('result-label').textContent = 'Secure Transfer Complete';
-    document.getElementById('result-detail').textContent = `TXN: ${data.transaction_id || ''}`;
+    document.getElementById('result-detail').textContent = `TXN: ${data.transaction_id || ''} | UPI: ${data.upi_id || 'Unknown'}`;
     receiptLnk.style.display = 'inline-block';
     receiptLnk.href = `/api/receipt/${currentQrId}?txn_id=${data.transaction_id || ''}`;
     playSound('success');
   } else {
     rs.className = 'active fail-state';
     document.getElementById('result-icon').textContent = '✗';
-    document.getElementById('result-label').textContent = 'AMOUNT MISMATCH DETECTED';
-    document.getElementById('result-detail').textContent = `Expected ₹${data.expected} / Got ₹${data.paid}`;
+    document.getElementById('result-label').textContent = 'FRAUD ALERT DETECTED';
+    document.getElementById('result-detail').textContent = `Expected ₹${data.expected} / Got ₹${data.paid} | UPI: ${data.upi_id || 'Unknown'}`;
+    
+    // Render specific fraud reasons
+    if (data.fraud_reasons && data.fraud_reasons.length > 0) {
+        data.fraud_reasons.forEach(reason => {
+            const div = document.createElement('div');
+            div.className = 'fraud-reason-item';
+            div.textContent = reason;
+            reasonsBox.appendChild(div);
+        });
+    } else {
+        // Fallback for older transactions/responses
+        const div = document.createElement('div');
+        div.className = 'fraud-reason-item';
+        div.textContent = 'Amount Mismatch';
+        reasonsBox.appendChild(div);
+    }
+    
     receiptLnk.style.display = 'none';
     playSound('fraud');
   }
@@ -663,7 +916,7 @@ async function loadHistory() {
         
         const badgeHTML = isSuccess 
             ? `<div class="badge safe">🛡 Safe</div>` 
-            : `<div class="badge danger">⚠ Suspicious</div>`;
+            : `<div class="badge danger" title="${txn.fraud_reasons ? txn.fraud_reasons.join(', ') : 'Fraud'}">⚠ Suspicious</div>`;
             
         const receiptHtml = isSuccess ? `<a href="/api/receipt/${txn.qr_id||'dummy'}?txn_id=${txn.transaction_id}" target="_blank" class="receipt-link">Receipt ↗</a>` : '';
         
@@ -672,7 +925,7 @@ async function loadHistory() {
             <div class="h-left">
               <div class="h-amt">₹${txn.paid}</div>
               <div class="h-detail">
-                <div class="name">${MERCHANT_NAME} Customer</div>
+                <div class="name">Customer<span class="upi-tag">(${txn.upi_id || 'Unknown'})</span></div>
                 <div class="sub">
                     <span>${txn.transaction_id ? txn.transaction_id.substring(0,8) : 'AUTO'}</span>
                     <span>${timeStr}</span>
@@ -682,6 +935,7 @@ async function loadHistory() {
             </div>
             <div class="h-right">
               ${badgeHTML}
+              ${!isSuccess && txn.fraud_reasons ? `<div style="font-size:10px; color:var(--red); text-align:right; margin-top:4px;">${txn.fraud_reasons[0].substring(0,25)}${txn.fraud_reasons[0].length > 25 ? '...' : ''}</div>` : ''}
             </div>
           </div>
         `;
@@ -719,6 +973,88 @@ function playSound(type) {
   } catch(e) {}
 }
 
+// ─────────────────────────────────────────────
+// ANALYTICS & CHARTS
+// ─────────────────────────────────────────────
+async function loadAnalytics() {
+  if (!MERCHANT_ID) return;
+  try {
+    const res = await fetch(`/api/analytics?merchant_id=${MERCHANT_ID}`);
+    const data = await res.json();
+    if(data.success) {
+      // Update Summary Cards
+      document.getElementById('stat-total').textContent = data.summary.total_transactions;
+      document.getElementById('stat-rate').textContent = `${data.summary.success_rate}%`;
+      document.getElementById('stat-fraud').textContent = data.summary.fraud_count;
+      
+      // Update/Create Revenue Chart
+      const revCtx = document.getElementById('revenueChart').getContext('2d');
+      if (revenueChartInstance) revenueChartInstance.destroy();
+      
+      const gradient = revCtx.createLinearGradient(0, 0, 0, 300);
+      gradient.addColorStop(0, 'rgba(16, 185, 129, 0.5)'); // Green top
+      gradient.addColorStop(1, 'rgba(16, 185, 129, 0.0)'); // Transparent bottom
+
+      revenueChartInstance = new Chart(revCtx, {
+          type: 'bar',
+          data: {
+              labels: data.charts.daily_revenue.labels,
+              datasets: [{
+                  label: 'Revenue (₹)',
+                  data: data.charts.daily_revenue.data,
+                  backgroundColor: gradient,
+                  borderColor: 'rgba(16, 185, 129, 1)',
+                  borderWidth: 1,
+                  borderRadius: 4,
+                  barPercentage: 0.6
+              }]
+          },
+          options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              scales: { 
+                  y: { beginAtZero: true, grid: { color: '#333' } },
+                  x: { grid: { display: false } }
+              },
+              plugins: { legend: { display: false } }
+          }
+      });
+      
+      // Update/Create Peak Hours Chart
+      const hoursCtx = document.getElementById('hoursChart').getContext('2d');
+      if (hoursChartInstance) hoursChartInstance.destroy();
+      
+      hoursChartInstance = new Chart(hoursCtx, {
+          type: 'line',
+          data: {
+              labels: data.charts.hourly_distribution.labels,
+              datasets: [{
+                  label: 'Transactions',
+                  data: data.charts.hourly_distribution.data,
+                  backgroundColor: 'rgba(249, 115, 22, 0.1)',
+                  borderColor: 'rgba(249, 115, 22, 1)', // Saffron
+                  borderWidth: 2,
+                  tension: 0.4,
+                  fill: true,
+                  pointBackgroundColor: '#121212',
+                  pointBorderColor: 'rgba(249, 115, 22, 1)',
+                  pointRadius: 3
+              }]
+          },
+          options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              scales: { 
+                  y: { beginAtZero: true, ticks: { stepSize: 1 }, grid: { color: '#333' } },
+                  x: { grid: { display: false } }
+              },
+              plugins: { legend: { display: false } }
+          }
+      });
+    }
+  } catch(e) { console.error("Failed to load analytics", e); }
+}
+
 function startTimer(sec) {
   const bar = document.getElementById('timer-bar'), lbl = document.getElementById('timer-label');
   let rem = sec; bar.style.width = '100%';
@@ -728,6 +1064,57 @@ function startTimer(sec) {
     if(rem <= 0) { clearInterval(timerInterval); lbl.textContent = 'Expired'; setTimeout(resetFlow, 2000); }
   }, 1000);
 }
+
+// ─────────────────────────────────────────────
+// AUDIT TRAIL
+// ─────────────────────────────────────────────
+async function loadAuditLogs() {
+  if (!MERCHANT_ID) return;
+  
+  const actionFilter = document.getElementById('audit-filter-action').value;
+  const statusFilter = document.getElementById('audit-filter-status').value;
+  
+  try {
+    const res = await fetch(`/api/audit-logs?merchant_id=${MERCHANT_ID}&action=${actionFilter}&status=${statusFilter}`);
+    const data = await res.json();
+    
+    if(data.success) {
+      const tbody = document.getElementById('audit-table-body');
+      
+      if(data.logs.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#888; padding:32px;">No audit logs found matching criteria</td></tr>';
+        return;
+      }
+      
+      tbody.innerHTML = '';
+      data.logs.forEach(log => {
+        const d = new Date(log.timestamp * 1000);
+        const timeStr = `${d.toLocaleDateString()} ${d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}`;
+        
+        let statusStyle = 'color: var(--text-secondary);';
+        if (log.status === 'SUCCESS') statusStyle = 'color: var(--green);';
+        else if (log.status === 'SUSPICIOUS') statusStyle = 'color: var(--red);';
+        
+        const detailsStr = JSON.stringify(log.details, null, 2).replace(/"/g, '&quot;');
+        
+        tbody.innerHTML += `
+          <tr>
+            <td style="color:#888;">${timeStr}</td>
+            <td class="action-cell">${log.action}</td>
+            <td class="mono">${log.upi_id || '--'}</td>
+            <td class="mono">₹${log.amount}</td>
+            <td style="${statusStyle} font-weight:600;">${log.status}</td>
+            <td><button style="background:#333; color:white; border:none; padding:4px 8px; border-radius:4px; font-size:11px; cursor:pointer;" onclick="alert('${detailsStr}')">View JSON</button></td>
+          </tr>
+        `;
+      });
+    }
+  } catch(e) { console.error("Failed to load audit logs", e); }
+}
+
+document.getElementById('audit-filter-action').addEventListener('change', loadAuditLogs);
+document.getElementById('audit-filter-status').addEventListener('change', loadAuditLogs);
+
 </script>
 
 </body>

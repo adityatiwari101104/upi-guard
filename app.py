@@ -12,6 +12,7 @@ import time
 import qrcode
 import io
 import base64
+import sqlite3
 from collections import deque
 from flask import Flask, request, jsonify, render_template
 from flask_socketio import SocketIO, emit, join_room
@@ -43,6 +44,50 @@ processed_events = set()
 # Structure: { merchant_id: [ { transaction_id, amount, status, timestamp, ... }, ... ] }
 transaction_history = {}
 
+# ─────────────────────────────────────────────
+# FRAUD DETECTION STATE
+# ─────────────────────────────────────────────
+# Track payment frequency: { "upi_id": [timestamp1, timestamp2, ...] }
+upi_history = {}
+
+# Blocked UPI IDs
+blocked_upi_ids = set()
+
+# ─────────────────────────────────────────────
+# DATABASE SETUP (AUDIT TRAIL)
+# ─────────────────────────────────────────────
+def init_db():
+    conn = sqlite3.connect('audit.db')
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp REAL,
+            merchant_id TEXT,
+            action TEXT,
+            amount REAL,
+            upi_id TEXT,
+            status TEXT,
+            details TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def log_audit_event(merchant_id, action, amount=0.0, upi_id="", status="INFO", details=""):
+    try:
+        conn = sqlite3.connect('audit.db')
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO audit_log (timestamp, merchant_id, action, amount, upi_id, status, details)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (time.time(), merchant_id, action, amount, upi_id, status, json.dumps(details)))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Audit log error: {e}")
 
 # ─────────────────────────────────────────────
 # ROUTES
@@ -98,6 +143,15 @@ def create_qr():
         # (Razorpay also returns image_url directly)
         upi_string = qr_response.get('image_url', '')
 
+        # --- AUDIT LOG ---
+        log_audit_event(
+            merchant_id=merchant_id, 
+            action="QR_GENERATED", 
+            amount=float(amount), 
+            status="SUCCESS",
+            details={"qr_id": qr_id, "gateway": "razorpay"}
+        )
+
         return jsonify({
             'success': True,
             'qr_id': qr_id,
@@ -128,6 +182,15 @@ def create_qr():
             'demo': True
         }
 
+        # --- AUDIT LOG ---
+        log_audit_event(
+            merchant_id=merchant_id, 
+            action="QR_GENERATED", 
+            amount=float(amount), 
+            status="SUCCESS",
+            details={"qr_id": qr_id, "gateway": "demo_fallback"}
+        )
+
         return jsonify({
             'success': True,
             'qr_id': qr_id,
@@ -145,6 +208,9 @@ def simulate_payment():
     qr_id = data.get('qr_id')
     paid_amount = float(data.get('amount', 0))
     paid_paise = int(paid_amount * 100)
+    
+    # In demo mode, we allow the client to specify a UPI ID, default to testing
+    upi_id = data.get('upi_id', 'demo@upi')
 
     session = qr_sessions.get(qr_id)
     if not session:
@@ -153,22 +219,64 @@ def simulate_payment():
     expected_paise = session['expected_amount']
     merchant_id = session['merchant_id']
 
-    if paid_paise == expected_paise:
+    # --- AI Fraud Detection Checks ---
+    now = time.time()
+    fraud_reasons = []
+
+    # 1. Blocklist Check
+    if upi_id in blocked_upi_ids:
+        fraud_reasons.append("Blocked UPI ID")
+
+    # 2. Unusual Amount Check
+    if paid_amount < 2.0 or paid_amount in [1.0, 0.5, 0.01]:
+        fraud_reasons.append("Unusual Attempt Value")
+
+    # 3. Frequency Check (Velocity)
+    if upi_id not in upi_history:
+        upi_history[upi_id] = deque(maxlen=10)
+    
+    # Clean up old timestamps (> 2 minutes old)
+    while upi_history[upi_id] and now - upi_history[upi_id][0] > 120:
+        upi_history[upi_id].popleft()
+        
+    # If 3 or more payments in the last 2 minutes, flag it!
+    if len(upi_history[upi_id]) >= 2:
+        fraud_reasons.append("High Frequency (Suspected Bot)")
+        blocked_upi_ids.add(upi_id) # Auto-block for future attempts
+        
+    # Record this attempt
+    upi_history[upi_id].append(now)
+
+    # --- Standard Amount Matching ---
+    if paid_paise != expected_paise:
+        fraud_reasons.append(f"Amount Mismatch Expected ₹{session['expected_amount_rupees']:.0f}, Got ₹{paid_amount:.0f}")
+
+    if not fraud_reasons:
         result = {
             'status': 'SUCCESS',
             'paid': paid_amount,
             'expected': session['expected_amount_rupees'],
+            'upi_id': upi_id,
             'message': f"₹{paid_amount:.0f} Received ✓"
         }
         session['status'] = 'paid'
+        
+        # --- AUDIT LOG ---
+        log_audit_event(merchant_id, "PAYMENT_RECEIVED", paid_amount, upi_id, "SUCCESS")
+        
     else:
         result = {
-            'status': 'MISMATCH',
+            'status': 'MISMATCH',  # Keep 'MISMATCH' label for frontend compatibility
             'paid': paid_amount,
             'expected': session['expected_amount_rupees'],
-            'message': f"FRAUD ALERT! Expected ₹{session['expected_amount_rupees']:.0f}, Got ₹{paid_amount:.0f}"
+            'upi_id': upi_id,
+            'message': f"FRAUD ALERT! { ' | '.join(fraud_reasons) }",
+            'fraud_reasons': fraud_reasons
         }
         session['status'] = 'mismatch'
+
+        # --- AUDIT LOG ---
+        log_audit_event(merchant_id, "FRAUD_FLAGGED", paid_amount, upi_id, "SUSPICIOUS", {"reasons": fraud_reasons, "expected": session['expected_amount_rupees']})
 
     socketio.emit('payment_result', result, room=merchant_id)
     
@@ -241,28 +349,65 @@ def razorpay_webhook():
         merchant_id = session['merchant_id']
         paid_rupees = float(amount_received) / 100.0
         expected_rupees = float(expected) / 100.0
+        
+        # In real webhooks, we try to extract payer tracking info if provided 
+        # (Razorpay doesn't always expose customer UPI ID in this specific event payload format directly without the Payment entity details, 
+        # so for demo purposes, we'll assign a static or hashed ID if missing)
+        upi_id = payment_entity.get('vpa', f"vpa_{transaction_id[-6:]}@rzp")
 
-        # Strict amount equality check
-        if amount_received == expected:
+        # --- AI Fraud Detection Checks ---
+        now = time.time()
+        fraud_reasons = []
+
+        if upi_id in blocked_upi_ids:
+            fraud_reasons.append("Blocked UPI ID")
+
+        if paid_rupees < 2.0 or paid_rupees in [1.0, 0.5, 0.01]:
+            fraud_reasons.append("Unusual Attempt Value")
+
+        if upi_id not in upi_history:
+            upi_history[upi_id] = deque(maxlen=10)
+        
+        while upi_history[upi_id] and now - upi_history[upi_id][0] > 120:
+            upi_history[upi_id].popleft()
+            
+        if len(upi_history[upi_id]) >= 2:
+            fraud_reasons.append("High Frequency (Suspected Bot)")
+            blocked_upi_ids.add(upi_id)
+            
+        upi_history[upi_id].append(now)
+
+        if amount_received != expected:
+            fraud_reasons.append(f"Amount Mismatch: Expected ₹{expected_rupees:.0f}, Got ₹{paid_rupees:.0f}")
+
+        # --- Resolve Check ---
+        if not fraud_reasons:
             result = {
                 'status': 'SUCCESS',
                 'paid': paid_rupees,
                 'expected': expected_rupees,
+                'upi_id': upi_id,
                 'message': f"₹{paid_rupees:.0f} Received ✓",
                 'transaction_id': transaction_id,
                 'timestamp': time.time()
             }
             session['status'] = 'paid'
+            # --- AUDIT LOG ---
+            log_audit_event(merchant_id, "PAYMENT_RECEIVED", paid_rupees, upi_id, "SUCCESS")
         else:
             result = {
                 'status': 'MISMATCH',
                 'paid': paid_rupees,
                 'expected': expected_rupees,
-                'message': f"FRAUD ALERT! Expected ₹{expected_rupees:.0f}, Got ₹{paid_rupees:.0f}",
+                'upi_id': upi_id,
+                'message': f"FRAUD ALERT! { ' | '.join(fraud_reasons) }",
+                'fraud_reasons': fraud_reasons,
                 'transaction_id': transaction_id,
                 'timestamp': time.time()
             }
             session['status'] = 'mismatch'
+            # --- AUDIT LOG ---
+            log_audit_event(merchant_id, "FRAUD_FLAGGED", paid_rupees, upi_id, "SUSPICIOUS", {"reasons": fraud_reasons, "expected": expected_rupees})
 
         # Record to transaction history
         if merchant_id not in transaction_history:
@@ -293,6 +438,109 @@ def get_history():
         
     history = transaction_history.get(merchant_id, [])
     return jsonify({'success': True, 'history': history[-50:]}) # return last 50
+
+
+@app.route('/api/audit-logs', methods=['GET'])
+def get_audit_logs():
+    """Retrieve database-backed audit trailing logs for a merchant"""
+    merchant_id = request.args.get('merchant_id')
+    if not merchant_id:
+        return jsonify({'error': 'merchant_id required'}), 400
+    
+    action_filter = request.args.get('action')
+    status_filter = request.args.get('status')
+    
+    query = "SELECT timestamp, action, amount, upi_id, status, details FROM audit_log WHERE merchant_id = ?"
+    params = [merchant_id]
+    
+    if action_filter and action_filter != 'ALL':
+        query += " AND action = ?"
+        params.append(action_filter)
+        
+    if status_filter and status_filter != 'ALL':
+        query += " AND status = ?"
+        params.append(status_filter)
+        
+    query += " ORDER BY timestamp DESC LIMIT 100"
+    
+    try:
+        conn = sqlite3.connect('audit.db')
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute(query, params)
+        rows = c.fetchall()
+        
+        logs = []
+        for row in rows:
+            logs.append({
+                'timestamp': row['timestamp'],
+                'action': row['action'],
+                'amount': row['amount'],
+                'upi_id': row['upi_id'],
+                'status': row['status'],
+                'details': json.loads(row['details']) if row['details'] else {}
+            })
+        conn.close()
+        return jsonify({'success': True, 'logs': logs})
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/analytics', methods=['GET'])
+def get_analytics():
+    """Returns analytics data for a specific merchant"""
+    merchant_id = request.args.get('merchant_id')
+    if not merchant_id:
+        return jsonify({'error': 'merchant_id required'}), 400
+        
+    history = transaction_history.get(merchant_id, [])
+    
+    total_txns = len(history)
+    success_count = sum(1 for t in history if t.get('status') == 'SUCCESS')
+    fraud_count = total_txns - success_count
+    success_rate = round((success_count / total_txns * 100) if total_txns > 0 else 0, 1)
+
+    # Calculate last 7 days revenue
+    from datetime import datetime, timedelta
+    today = datetime.now().date()
+    
+    daily_revenue = { (today - timedelta(days=i)).strftime('%b %d'): 0 for i in range(6, -1, -1) }
+    hourly_distribution = { f"{i:02d}:00": 0 for i in range(24) }
+
+    for t in history:
+        if 'timestamp' in t:
+            dt = datetime.fromtimestamp(t['timestamp'])
+            
+            # Daily revenue (only successful transactions)
+            if t.get('status') == 'SUCCESS':
+                date_str = dt.strftime('%b %d')
+                if date_str in daily_revenue:
+                    daily_revenue[date_str] += t.get('paid', 0)
+            
+            # Hourly distribution (all transactions)
+            hour_str = f"{dt.hour:02d}:00"
+            if hour_str in hourly_distribution:
+                hourly_distribution[hour_str] += 1
+
+    return jsonify({
+        'success': True,
+        'summary': {
+            'total_transactions': total_txns,
+            'success_rate': success_rate,
+            'fraud_count': fraud_count
+        },
+        'charts': {
+            'daily_revenue': {
+                'labels': list(daily_revenue.keys()),
+                'data': list(daily_revenue.values())
+            },
+            'hourly_distribution': {
+                'labels': list(hourly_distribution.keys()),
+                'data': list(hourly_distribution.values())
+            }
+        }
+    })
 
 
 @app.route('/api/receipt/<qr_id>', methods=['GET'])
