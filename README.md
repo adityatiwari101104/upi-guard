@@ -40,7 +40,8 @@ Edit `.env` and fill in:
 python app.py
 ```
 
-Open `http://localhost:5000`
+Open `http://localhost:5000` for the public landing page, then click **Open Terminal**.
+Direct terminal URL: `http://localhost:5000/terminal`
 
 > **Note:** Without Razorpay keys, the app runs in **Demo Mode** automatically.
 > You can simulate real and fraudulent payments using the on-screen buttons.
@@ -77,8 +78,15 @@ If Razorpay keys aren't set, the app runs in demo mode:
 ```
 upi-guard/
 ├── app.py              # Flask backend + WebSocket server
+├── static/
+│   ├── css/
+│   │   ├── landing.css     # Public landing page styles
+│   │   └── terminal.css    # Terminal app styles
+│   └── js/
+│       └── terminal.jsx    # React terminal frontend
 ├── templates/
-│   └── index.html      # Merchant terminal UI
+│   ├── index.html       # Public landing page
+│   └── terminal.html    # React mount shell for terminal
 ├── requirements.txt
 ├── .env.example
 └── README.md
@@ -88,11 +96,20 @@ upi-guard/
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/` | GET | Merchant UI |
+| `/` | GET | Public landing page |
+| `/terminal` | GET | Merchant terminal (React frontend) |
 | `/api/create-qr` | POST | Generate amount-locked UPI QR |
 | `/api/simulate-payment` | POST | Demo: simulate a payment |
 | `/webhook` | POST | Razorpay payment webhook |
 | `/api/session/:qr_id` | GET | Polling fallback for payment status |
+
+---
+
+## Frontend Stack
+
+- Public marketing/entry page at `/`.
+- Merchant dashboard at `/terminal` built in **React**.
+- Styles and scripts split into static files for easier maintenance.
 
 ---
 

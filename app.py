@@ -94,8 +94,13 @@ def log_audit_event(merchant_id, action, amount=0.0, upi_id="", status="INFO", d
 # ─────────────────────────────────────────────
 
 @app.route('/')
-def index():
+def landing():
     return render_template('index.html')
+
+
+@app.route('/terminal')
+def terminal():
+    return render_template('terminal.html')
 
 
 @app.route('/api/create-qr', methods=['POST'])
