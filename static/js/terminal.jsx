@@ -78,6 +78,8 @@ function App() {
   const [qrImage, setQrImage] = useState("");
   const [isDemoMode, setIsDemoMode] = useState(false);
   const [demoUpiId, setDemoUpiId] = useState("demo@upi");
+  const [paymentMode, setPaymentMode] = useState(localStorage.getItem("upiguard_payment_mode") || "live");
+  const [qrError, setQrError] = useState("");
 
   const [timerRemaining, setTimerRemaining] = useState(0);
   const [timerTotal, setTimerTotal] = useState(0);
@@ -198,10 +200,17 @@ function App() {
     setCurrentAmount(0);
     setQrImage("");
     setIsDemoMode(false);
+    setQrError("");
     setTimerRemaining(0);
     setTimerTotal(0);
     setResult((prev) => ({ ...prev, open: false }));
     loadHistory();
+  }
+
+  function onModeChange(mode) {
+    setPaymentMode(mode);
+    localStorage.setItem("upiguard_payment_mode", mode);
+    setQrError("");
   }
 
   function handlePaymentResult(data) {
@@ -436,6 +445,7 @@ function App() {
       return;
     }
 
+    setQrError("");
     setCreatingQr(true);
 
     try {
@@ -446,6 +456,7 @@ function App() {
           amount,
           merchant_id: merchantId,
           merchant_name: merchantName,
+          mode: paymentMode,
         }),
       });
 
@@ -459,9 +470,12 @@ function App() {
         setTimerTotal(expiry);
         setTimerRemaining(expiry);
         setScreen("qr");
+      } else {
+        setQrError(data.error || "Unable to generate QR right now.");
       }
     } catch (err) {
       console.error("Failed to create QR", err);
+      setQrError("Unable to reach server. Please try again.");
     } finally {
       setCreatingQr(false);
     }
@@ -636,6 +650,29 @@ function App() {
                     <span>Bill Amount</span>
                     <span>...</span>
                   </div>
+
+                  <div className="view-toggle" style={{ marginBottom: 12 }}>
+                    <button
+                      className={`view-btn ${paymentMode === "live" ? "active" : ""}`}
+                      onClick={() => onModeChange("live")}
+                    >
+                      Live
+                    </button>
+                    <button
+                      className={`view-btn ${paymentMode === "demo" ? "active" : ""}`}
+                      onClick={() => onModeChange("demo")}
+                    >
+                      Demo
+                    </button>
+                  </div>
+
+                  <div className="muted" style={{ marginBottom: 10 }}>
+                    {paymentMode === "live"
+                      ? "Live mode waits for real Cashfree webhook payment confirmation."
+                      : "Demo mode allows instant simulation for testing."}
+                  </div>
+
+                  {qrError && <div className="small-danger" style={{ marginBottom: 10 }}>{qrError}</div>}
 
                   <div className="display">
                     <span className="currency">Rs</span>

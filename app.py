@@ -1,7 +1,7 @@
 """
 UPI Guard - Backend Server
 Run: python app.py
-Webhook URL for Razorpay: https://your-domain.com/webhook
+Webhook URL for Cashfree: https://your-domain.com/webhook
 """
 
 import os
@@ -9,7 +9,6 @@ import hmac
 import hashlib
 import json
 import time
-import qrcode
 import io
 import base64
 import sqlite3
@@ -17,7 +16,14 @@ from collections import deque
 from flask import Flask, request, jsonify, render_template
 from flask_socketio import SocketIO, emit, join_room
 from dotenv import load_dotenv
-import razorpay
+from cashfree_pg.api_client import Cashfree
+from cashfree_pg.models.create_order_request import CreateOrderRequest
+from cashfree_pg.models.customer_details import CustomerDetails
+from cashfree_pg.models.order_meta import OrderMeta
+from cashfree_pg.models.pay_order_request import PayOrderRequest
+from cashfree_pg.models.pay_order_request_payment_method import PayOrderRequestPaymentMethod
+from cashfree_pg.models.upi_payment_method import UPIPaymentMethod
+from cashfree_pg.models.upi import Upi
 
 load_dotenv()
 
@@ -25,13 +31,22 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-prod')
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
-# Initialize Razorpay client
-client = razorpay.Client(auth=(
-    os.getenv('RAZORPAY_KEY_ID', 'rzp_test_YOUR_KEY_ID'),
-    os.getenv('RAZORPAY_KEY_SECRET', 'YOUR_KEY_SECRET')
-))
+CASHFREE_CLIENT_ID = os.getenv('CASHFREE_CLIENT_ID', '').strip()
+CASHFREE_CLIENT_SECRET = os.getenv('CASHFREE_CLIENT_SECRET', '').strip()
+CASHFREE_WEBHOOK_SECRET = os.getenv('CASHFREE_WEBHOOK_SECRET', '').strip()
+CASHFREE_ENVIRONMENT = os.getenv('CASHFREE_ENVIRONMENT', 'sandbox').strip().lower()
+PAYMENT_MODE_DEFAULT = os.getenv('PAYMENT_MODE_DEFAULT', 'live').strip().lower()
+CASHFREE_API_VERSION = "2023-08-01"
 
-RAZORPAY_WEBHOOK_SECRET = os.getenv('RAZORPAY_WEBHOOK_SECRET', 'YOUR_WEBHOOK_SECRET')
+# Initialize Cashfree client only when real credentials are present
+cashfree_client = None
+if CASHFREE_CLIENT_ID and CASHFREE_CLIENT_SECRET:
+    env = Cashfree.XProduction if CASHFREE_ENVIRONMENT == 'production' else Cashfree.XSandbox
+    cashfree_client = Cashfree(
+        XEnvironment=env,
+        XClientId=CASHFREE_CLIENT_ID,
+        XClientSecret=CASHFREE_CLIENT_SECRET
+    )
 
 # In-memory session store (use Redis/DB in production)
 # Structure: { qr_id: { merchant_id, expected_amount, status, created_at, history: [...] } }
@@ -76,6 +91,61 @@ def init_db():
 
 init_db()
 
+
+def is_live_configured():
+    placeholder_values = {
+        'your_client_id',
+        'your_client_secret',
+        'your_webhook_secret'
+    }
+    return (
+        bool(cashfree_client)
+        and CASHFREE_CLIENT_ID not in placeholder_values
+        and CASHFREE_CLIENT_SECRET not in placeholder_values
+        and CASHFREE_WEBHOOK_SECRET not in placeholder_values
+    )
+
+
+def create_demo_qr_response(amount, amount_paise, merchant_id, merchant_name):
+    qr_id = f"demo_qr_{int(time.time())}"
+    upi_string = f"upi://pay?pa=merchant@okaxis&pn={merchant_name}&am={amount}&cu=INR&tn=Bill+Payment"
+
+    # Generate QR image locally in demo mode
+    import segno
+    qr_gen = segno.make(upi_string)
+    buffer = io.BytesIO()
+    qr_gen.save(buffer, kind='png', scale=10)
+    img_b64 = base64.b64encode(buffer.getvalue()).decode()
+
+    qr_sessions[qr_id] = {
+        'merchant_id': merchant_id,
+        'merchant_name': merchant_name,
+        'expected_amount': amount_paise,
+        'expected_amount_rupees': float(amount),
+        'status': 'pending',
+        'created_at': time.time(),
+        'demo': True
+    }
+
+    log_audit_event(
+        merchant_id=merchant_id,
+        action="QR_GENERATED",
+        amount=float(amount),
+        status="SUCCESS",
+        details={"qr_id": qr_id, "gateway": "demo"}
+    )
+
+    return jsonify({
+        'success': True,
+        'qr_id': qr_id,
+        'image_b64': f"data:image/png;base64,{img_b64}",
+        'amount': amount,
+        'expires_in': 300,
+        'demo_mode': True,
+        'mode': 'demo',
+        'upi_string': upi_string
+    })
+
 def log_audit_event(merchant_id, action, amount=0.0, upi_id="", status="INFO", details=""):
     try:
         conn = sqlite3.connect('audit.db')
@@ -106,105 +176,119 @@ def terminal():
 @app.route('/api/create-qr', methods=['POST'])
 def create_qr():
     """
-    Merchant enters bill amount → generate a locked UPI QR via Razorpay
+    Merchant enters bill amount → generate a locked UPI QR via Cashfree
     Body: { amount: 450, merchant_id: "shop123", merchant_name: "Sharma Kirana" }
     """
-    data = request.json
+    data = request.json or {}
     amount = data.get('amount')
     merchant_id = data.get('merchant_id', 'default_merchant')
     merchant_name = data.get('merchant_name', 'Merchant')
+    mode = str(data.get('mode', PAYMENT_MODE_DEFAULT)).strip().lower()
 
     if not amount or amount <= 0:
         return jsonify({'error': 'Invalid amount'}), 400
 
-    amount_paise = int(float(amount) * 100)  # Razorpay uses paise
+    if mode not in {'live', 'demo'}:
+        return jsonify({'error': 'Invalid mode. Use live or demo.'}), 400
+
+    amount_paise = int(float(amount) * 100)
+
+    if mode == 'demo':
+        return create_demo_qr_response(amount, amount_paise, merchant_id, merchant_name)
+
+    if not is_live_configured():
+        return jsonify({
+            'error': 'Live mode is not configured. Set Cashfree keys/webhook secret or switch to Demo mode.'
+        }), 400
 
     try:
-        # Create UPI QR via Razorpay
-        qr_response = client.qrcode.create({
-            "type": "upi_qr",
-            "name": merchant_name,
-            "usage": "single_use",       # Expires after one payment
-            "fixed_amount": True,
-            "payment_amount": amount_paise,
-            "description": f"Bill payment - ₹{amount}",
-            "close_by": int(time.time()) + 300,  # Expires in 5 minutes
-        })
-
-        qr_id = qr_response['id']
-        image_url = qr_response.get('image_url', '')
-
-        # Store session
-        qr_sessions[qr_id] = {
-            'merchant_id': merchant_id,
-            'merchant_name': merchant_name,
-            'expected_amount': amount_paise,
-            'expected_amount_rupees': amount,
-            'status': 'pending',
-            'created_at': time.time()
-        }
-
-        # Generate QR code image from the UPI string as fallback
-        # (Razorpay also returns image_url directly)
-        upi_string = qr_response.get('image_url', '')
-
-        # --- AUDIT LOG ---
-        log_audit_event(
-            merchant_id=merchant_id, 
-            action="QR_GENERATED", 
-            amount=float(amount), 
-            status="SUCCESS",
-            details={"qr_id": qr_id, "gateway": "razorpay"}
+        # Step 1: Create a Cashfree order
+        order_id = f"order_{merchant_id}_{int(time.time())}"
+        customer = CustomerDetails(
+            customer_id=merchant_id,
+            customer_phone="9999999999"
+        )
+        order_meta = OrderMeta(
+            return_url=f"https://your-domain.com/terminal?order_id={order_id}"
+        )
+        order_request = CreateOrderRequest(
+            order_id=order_id,
+            order_amount=float(amount),
+            order_currency="INR",
+            customer_details=customer,
+            order_meta=order_meta,
+            order_note=f"Bill payment - ₹{amount} at {merchant_name}"
         )
 
-        return jsonify({
-            'success': True,
-            'qr_id': qr_id,
-            'image_url': image_url,
-            'amount': amount,
-            'expires_in': 300
-        })
+        order_response = cashfree_client.PGCreateOrder(
+            CASHFREE_API_VERSION, order_request
+        )
+        order_data = order_response.data
+        payment_session_id = order_data.payment_session_id
 
-    except Exception as e:
-        # ── DEMO MODE: If Razorpay keys not configured, generate a mock QR ──
-        qr_id = f"demo_qr_{int(time.time())}"
-        upi_string = f"upi://pay?pa=merchant@okaxis&pn={merchant_name}&am={amount}&cu=INR&tn=Bill+Payment"
+        # Step 2: Pay with UPI QR to get a scannable QR code
+        upi_method = UPIPaymentMethod(
+            upi=Upi(channel="qrcode")
+        )
+        pay_method = PayOrderRequestPaymentMethod(actual_instance=upi_method)
+        pay_request = PayOrderRequest(
+            payment_session_id=payment_session_id,
+            payment_method=pay_method
+        )
 
-        # Generate QR image locally
-        import segno
-        qr_gen = segno.make(upi_string)
-        buffer = io.BytesIO()
-        qr_gen.save(buffer, kind='png', scale=10)
-        img_b64 = base64.b64encode(buffer.getvalue()).decode()
+        pay_response = cashfree_client.PGPayOrder(
+            CASHFREE_API_VERSION, pay_request
+        )
+        pay_data = pay_response.data
 
-        qr_sessions[qr_id] = {
+        # Extract QR code image from response
+        qr_image_b64 = ""
+        if pay_data.data and pay_data.data.payload:
+            qr_image_b64 = pay_data.data.payload.get("qrcode", "")
+
+        # Use order_id as the session key (webhook will reference this)
+        qr_sessions[order_id] = {
             'merchant_id': merchant_id,
             'merchant_name': merchant_name,
             'expected_amount': amount_paise,
             'expected_amount_rupees': float(amount),
             'status': 'pending',
             'created_at': time.time(),
-            'demo': True
+            'demo': False,
+            'cf_order_id': order_id,
+            'payment_session_id': payment_session_id
         }
 
         # --- AUDIT LOG ---
         log_audit_event(
-            merchant_id=merchant_id, 
-            action="QR_GENERATED", 
-            amount=float(amount), 
+            merchant_id=merchant_id,
+            action="QR_GENERATED",
+            amount=float(amount),
             status="SUCCESS",
-            details={"qr_id": qr_id, "gateway": "demo_fallback"}
+            details={"qr_id": order_id, "gateway": "cashfree"}
         )
 
         return jsonify({
             'success': True,
-            'qr_id': qr_id,
-            'image_b64': f"data:image/png;base64,{img_b64}",
+            'qr_id': order_id,
+            'image_b64': f"data:image/png;base64,{qr_image_b64}" if qr_image_b64 else "",
             'amount': amount,
             'expires_in': 300,
-            'demo_mode': True,
-            'upi_string': upi_string
+            'demo_mode': False,
+            'mode': 'live'
         })
+
+    except Exception as e:
+        log_audit_event(
+            merchant_id=merchant_id,
+            action="QR_GENERATION_FAILED",
+            amount=float(amount),
+            status="ERROR",
+            details={"gateway": "cashfree", "error": str(e)}
+        )
+        return jsonify({
+            'error': f'Failed to create live Cashfree QR. Verify keys, account status, and network, or switch to Demo mode. ({str(e)})'
+        }), 502
 
 
 @app.route('/api/simulate-payment', methods=['POST'])
@@ -220,6 +304,9 @@ def simulate_payment():
     session = qr_sessions.get(qr_id)
     if not session:
         return jsonify({'error': 'QR session not found'}), 404
+
+    if not session.get('demo'):
+        return jsonify({'error': 'Simulation is allowed only for demo mode transactions.'}), 403
 
     expected_paise = session['expected_amount']
     merchant_id = session['merchant_id']
@@ -301,64 +388,68 @@ def simulate_payment():
 
 
 @app.route('/webhook', methods=['POST'])
-def razorpay_webhook():
+def cashfree_webhook():
     """
-    Razorpay calls this URL when a payment is made.
-    Configure this in Razorpay Dashboard → Webhooks
+    Cashfree calls this URL when a payment is made.
+    Configure this in Cashfree Dashboard → Payment Gateway → Developers → Webhook
     """
-    payload = request.get_data(as_text=True)
-    signature = request.headers.get('X-Razorpay-Signature', '')
+    raw_body = request.get_data(as_text=True)
+    signature = request.headers.get('x-webhook-signature', '')
+    timestamp = request.headers.get('x-webhook-timestamp', '')
 
-    # Verify webhook signature
-    try:
-        expected_sig = hmac.new(
-            RAZORPAY_WEBHOOK_SECRET.encode(),
-            payload.encode(),
+    # Webhook verification is mandatory for live mode
+    if not CASHFREE_WEBHOOK_SECRET or CASHFREE_WEBHOOK_SECRET == 'your_webhook_secret':
+        return jsonify({'error': 'Webhook secret not configured'}), 500
+
+    # Verify signature: HMAC-SHA256(secret, "timestamp.raw_body") → base64
+    message = f"{timestamp}{raw_body}"
+    expected_sig = base64.b64encode(
+        hmac.new(
+            CASHFREE_WEBHOOK_SECRET.encode(),
+            message.encode(),
             hashlib.sha256
-        ).hexdigest()
+        ).digest()
+    ).decode()
 
-        if not hmac.compare_digest(expected_sig, signature):
-            return jsonify({'error': 'Invalid signature'}), 400
-    except Exception:
-        # In production this should be strictly enforced
-        pass  # Skip verification in demo mode
+    if not hmac.compare_digest(expected_sig, signature):
+        return jsonify({'error': 'Invalid signature'}), 400
 
-    data = json.loads(payload)
-    event = data.get('event')
-    
+    data = json.loads(raw_body)
+    event_type = data.get('type', '')
+
     # Idempotency Check: Don't process the same webhook event twice
-    event_id = data.get('event_id') if 'event_id' in data else f"evt_{hashlib.md5(payload.encode()).hexdigest()}"
+    event_id = request.headers.get('x-idempotency-key', f"evt_{hashlib.md5(raw_body.encode()).hexdigest()}")
     if event_id in processed_events:
         return jsonify({'status': 'ok', 'message': 'Duplicate event ignored'})
     processed_events.add(event_id)
 
-    if event == 'qr_code.credited':
-        # Extract payment info
-        qr_entity = data['payload']['qr_code']['entity']
-        payment_entity = data['payload']['payment']['entity']
+    if event_type == 'PAYMENT_SUCCESS_WEBHOOK':
+        # Extract payment info from Cashfree payload
+        payment_data = data.get('data', {})
+        order_info = payment_data.get('order', {})
+        payment_info = payment_data.get('payment', {})
 
-        qr_id = qr_entity['id']
-        amount_received = payment_entity['amount']  # in paise
-        transaction_id = payment_entity.get('id', '')
+        order_id = order_info.get('order_id', '')
+        paid_amount_rupees = float(payment_info.get('payment_amount', 0))
+        paid_paise = int(paid_amount_rupees * 100)
+        transaction_id = str(payment_info.get('cf_payment_id', ''))
 
-        session = qr_sessions.get(qr_id)
+        # Extract UPI ID from payment method details
+        payment_method = payment_info.get('payment_method', {})
+        upi_details = payment_method.get('upi', {})
+        upi_id = upi_details.get('upi_id', f"payer_{transaction_id[-6:]}@upi")
+
+        session = qr_sessions.get(order_id)
         if not session:
-            # Optionally record unmatched payments to an orphan ledger
             return jsonify({'error': 'Session not found'}), 404
 
         # If already paid, ignore (Secondary idempotency backup)
         if session['status'] == 'paid':
             return jsonify({'status': 'ok', 'message': 'Already processed'})
 
-        expected = session['expected_amount']
+        expected_paise = session['expected_amount']
         merchant_id = session['merchant_id']
-        paid_rupees = float(amount_received) / 100.0
-        expected_rupees = float(expected) / 100.0
-        
-        # In real webhooks, we try to extract payer tracking info if provided 
-        # (Razorpay doesn't always expose customer UPI ID in this specific event payload format directly without the Payment entity details, 
-        # so for demo purposes, we'll assign a static or hashed ID if missing)
-        upi_id = payment_entity.get('vpa', f"vpa_{transaction_id[-6:]}@rzp")
+        expected_rupees = float(expected_paise) / 100.0
 
         # --- AI Fraud Detection Checks ---
         now = time.time()
@@ -367,42 +458,42 @@ def razorpay_webhook():
         if upi_id in blocked_upi_ids:
             fraud_reasons.append("Blocked UPI ID")
 
-        if paid_rupees < 2.0 or paid_rupees in [1.0, 0.5, 0.01]:
+        if paid_amount_rupees < 2.0 or paid_amount_rupees in [1.0, 0.5, 0.01]:
             fraud_reasons.append("Unusual Attempt Value")
 
         if upi_id not in upi_history:
             upi_history[upi_id] = deque(maxlen=10)
-        
+
         while upi_history[upi_id] and now - upi_history[upi_id][0] > 120:
             upi_history[upi_id].popleft()
-            
+
         if len(upi_history[upi_id]) >= 2:
             fraud_reasons.append("High Frequency (Suspected Bot)")
             blocked_upi_ids.add(upi_id)
-            
+
         upi_history[upi_id].append(now)
 
-        if amount_received != expected:
-            fraud_reasons.append(f"Amount Mismatch: Expected ₹{expected_rupees:.0f}, Got ₹{paid_rupees:.0f}")
+        if paid_paise != expected_paise:
+            fraud_reasons.append(f"Amount Mismatch: Expected ₹{expected_rupees:.0f}, Got ₹{paid_amount_rupees:.0f}")
 
         # --- Resolve Check ---
         if not fraud_reasons:
             result = {
                 'status': 'SUCCESS',
-                'paid': paid_rupees,
+                'paid': paid_amount_rupees,
                 'expected': expected_rupees,
                 'upi_id': upi_id,
-                'message': f"₹{paid_rupees:.0f} Received ✓",
+                'message': f"₹{paid_amount_rupees:.0f} Received ✓",
                 'transaction_id': transaction_id,
                 'timestamp': time.time()
             }
             session['status'] = 'paid'
             # --- AUDIT LOG ---
-            log_audit_event(merchant_id, "PAYMENT_RECEIVED", paid_rupees, upi_id, "SUCCESS")
+            log_audit_event(merchant_id, "PAYMENT_RECEIVED", paid_amount_rupees, upi_id, "SUCCESS")
         else:
             result = {
                 'status': 'MISMATCH',
-                'paid': paid_rupees,
+                'paid': paid_amount_rupees,
                 'expected': expected_rupees,
                 'upi_id': upi_id,
                 'message': f"FRAUD ALERT! { ' | '.join(fraud_reasons) }",
@@ -412,7 +503,7 @@ def razorpay_webhook():
             }
             session['status'] = 'mismatch'
             # --- AUDIT LOG ---
-            log_audit_event(merchant_id, "FRAUD_FLAGGED", paid_rupees, upi_id, "SUSPICIOUS", {"reasons": fraud_reasons, "expected": expected_rupees})
+            log_audit_event(merchant_id, "FRAUD_FLAGGED", paid_amount_rupees, upi_id, "SUSPICIOUS", {"reasons": fraud_reasons, "expected": expected_rupees})
 
         # Record to transaction history
         if merchant_id not in transaction_history:

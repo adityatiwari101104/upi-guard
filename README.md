@@ -10,7 +10,7 @@ the actual payment received vs. what was expected — with a clear green/red ful
 1. Merchant types the bill amount (e.g. ₹450)
 2. App generates a UPI QR locked to exactly ₹450
 3. Customer scans and pays
-4. Razorpay webhook fires → server verifies amount
+4. Cashfree webhook fires → server verifies amount
 5. Merchant screen flashes **GREEN ✓** (correct) or **RED ✗** (mismatch/fraud)
 
 ---
@@ -30,9 +30,10 @@ cp .env.example .env
 ```
 
 Edit `.env` and fill in:
-- `RAZORPAY_KEY_ID` — from Razorpay Dashboard → Settings → API Keys
-- `RAZORPAY_KEY_SECRET` — same place
-- `RAZORPAY_WEBHOOK_SECRET` — set when creating the webhook (next step)
+- `CASHFREE_CLIENT_ID` — from Cashfree Merchant Dashboard → Developers → API Keys
+- `CASHFREE_CLIENT_SECRET` — same place
+- `CASHFREE_WEBHOOK_SECRET` — set when creating the webhook (next step)
+- `CASHFREE_ENVIRONMENT` — `sandbox` for testing, `production` for real payments
 
 ### 3. Run Locally
 
@@ -43,12 +44,13 @@ python app.py
 Open `http://localhost:5000` for the public landing page, then click **Open Terminal**.
 Direct terminal URL: `http://localhost:5000/terminal`
 
-> **Note:** Without Razorpay keys, the app runs in **Demo Mode** automatically.
-> You can simulate real and fraudulent payments using the on-screen buttons.
+Use the mode selector on the terminal screen:
+- **Live**: creates real Cashfree UPI QR and waits for webhook confirmation.
+- **Demo**: creates local test QR and enables simulation buttons.
 
 ### 4. Deploy & Configure Webhook (for real payments)
 
-You need a public HTTPS URL for Razorpay to call your server.
+You need a public HTTPS URL for Cashfree to call your server.
 
 **Deploy to Render (free):**
 1. Push this repo to GitHub
@@ -56,20 +58,27 @@ You need a public HTTPS URL for Razorpay to call your server.
 3. Set environment variables in Render dashboard
 4. Your URL will be: `https://your-app.onrender.com`
 
-**Configure Razorpay Webhook:**
-1. Go to Razorpay Dashboard → Settings → Webhooks
+**Configure Cashfree Webhook:**
+1. Go to Cashfree Merchant Dashboard → Payment Gateway → Developers → Webhook
 2. Add webhook URL: `https://your-app.onrender.com/webhook`
-3. Select event: `qr_code.credited`
+3. Select event: `PAYMENT_SUCCESS_WEBHOOK`
 4. Copy the webhook secret into your `.env`
 
 ---
 
 ## Demo Mode
 
-If Razorpay keys aren't set, the app runs in demo mode:
+If you select Demo mode, the app runs with local simulation:
 - QR codes are generated locally (standard UPI format)
 - Two buttons appear: "Pay Correct Amount" and "Pay ₹1 (Fraud)"
 - Full green/red flow works exactly as in production
+
+## Live Mode
+
+If you select Live mode:
+- Cashfree keys and webhook secret must be configured in `.env`
+- QR generation failure returns an error (no silent fallback)
+- Payment success/fraud is decided from real Cashfree webhook events
 
 ---
 
@@ -100,7 +109,7 @@ upi-guard/
 | `/terminal` | GET | Merchant terminal (React frontend) |
 | `/api/create-qr` | POST | Generate amount-locked UPI QR |
 | `/api/simulate-payment` | POST | Demo: simulate a payment |
-| `/webhook` | POST | Razorpay payment webhook |
+| `/webhook` | POST | Cashfree payment webhook |
 | `/api/session/:qr_id` | GET | Polling fallback for payment status |
 
 ---
