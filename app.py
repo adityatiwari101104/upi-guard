@@ -50,6 +50,7 @@ if CASHFREE_CLIENT_ID and CASHFREE_CLIENT_SECRET:
         XClientId=CASHFREE_CLIENT_ID,
         XClientSecret=CASHFREE_CLIENT_SECRET
     )
+    cashfree_client.XRequestTimeout = 30
 
 # In-memory session store (use Redis/DB in production)
 # Structure: { qr_id: { merchant_id, expected_amount, status, created_at, history: [...] } }
@@ -212,7 +213,7 @@ def create_qr():
             customer_phone="9999999999"
         )
         order_meta = OrderMeta(
-            return_url=f"https://your-domain.com/terminal?order_id={order_id}"
+            return_url=f"https://upi-guard-568m.onrender.com/terminal?order_id={order_id}"
         )
         order_request = CreateOrderRequest(
             order_id=order_id,
