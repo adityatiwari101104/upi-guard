@@ -4,6 +4,9 @@ Run: python app.py
 Webhook URL for Cashfree: https://your-domain.com/webhook
 """
 
+import eventlet
+eventlet.monkey_patch()
+
 import os
 import hmac
 import hashlib
