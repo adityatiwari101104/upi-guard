@@ -3,6 +3,5 @@ flask-socketio==5.3.6
 cashfree_pg==5.0.6
 python-dotenv==1.0.0
 gunicorn==21.2.0
-gevent==24.2.1
 setuptools==69.0.0
 segno==1.6.1
