@@ -245,10 +245,11 @@ def create_qr():
             order_note=f"Bill payment - Rs {amount} at {merchant_name}"
         )
 
-        # Step 1: Create Cashfree order (this works without S2S approval)
-        order_response = cashfree_client.PGCreateOrder(
-            CASHFREE_API_VERSION, order_request
-        )
+        # Step 1: Create Cashfree order (run in native thread to avoid eventlet DNS issues)
+        def _create_order():
+            return cashfree_client.PGCreateOrder(CASHFREE_API_VERSION, order_request)
+
+        order_response = eventlet.tpool.execute(_create_order)
         order_data = order_response.data
         payment_session_id = order_data.payment_session_id
 
