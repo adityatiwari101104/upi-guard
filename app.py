@@ -5,7 +5,7 @@ Webhook URL for Cashfree: https://your-domain.com/webhook
 """
 
 import eventlet
-eventlet.monkey_patch()
+eventlet.monkey_patch(os=True, select=True, socket=False, thread=True, time=True)
 
 import os
 import hmac
@@ -15,18 +15,22 @@ import time
 import io
 import base64
 import sqlite3
+import segno
+from urllib.parse import quote
 from collections import deque
 from flask import Flask, request, jsonify, render_template
 from flask_socketio import SocketIO, emit, join_room
 from dotenv import load_dotenv
-from cashfree_pg.api_client import Cashfree
-from cashfree_pg.models.create_order_request import CreateOrderRequest
-from cashfree_pg.models.customer_details import CustomerDetails
-from cashfree_pg.models.order_meta import OrderMeta
-from cashfree_pg.models.pay_order_request import PayOrderRequest
-from cashfree_pg.models.pay_order_request_payment_method import PayOrderRequestPaymentMethod
-from cashfree_pg.models.upi_payment_method import UPIPaymentMethod
-from cashfree_pg.models.upi import Upi
+
+# Cashfree SDK (only needed for live mode order creation)
+try:
+    from cashfree_pg.api_client import Cashfree
+    from cashfree_pg.models.create_order_request import CreateOrderRequest
+    from cashfree_pg.models.customer_details import CustomerDetails
+    from cashfree_pg.models.order_meta import OrderMeta
+    CASHFREE_SDK_AVAILABLE = True
+except ImportError:
+    CASHFREE_SDK_AVAILABLE = False
 
 load_dotenv()
 
@@ -34,6 +38,7 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-prod')
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
+# Cashfree config
 CASHFREE_CLIENT_ID = os.getenv('CASHFREE_CLIENT_ID', '').strip()
 CASHFREE_CLIENT_SECRET = os.getenv('CASHFREE_CLIENT_SECRET', '').strip()
 CASHFREE_WEBHOOK_SECRET = os.getenv('CASHFREE_WEBHOOK_SECRET', '').strip()
@@ -41,35 +46,33 @@ CASHFREE_ENVIRONMENT = os.getenv('CASHFREE_ENVIRONMENT', 'sandbox').strip().lowe
 PAYMENT_MODE_DEFAULT = os.getenv('PAYMENT_MODE_DEFAULT', 'live').strip().lower()
 CASHFREE_API_VERSION = "2023-08-01"
 
-# Initialize Cashfree client only when real credentials are present
+# Merchant UPI VPA fallback for direct QR mode
+MERCHANT_UPI_VPA = os.getenv('MERCHANT_UPI_VPA', '').strip()
+
+# Initialize Cashfree client
 cashfree_client = None
-if CASHFREE_CLIENT_ID and CASHFREE_CLIENT_SECRET:
-    env = Cashfree.XProduction if CASHFREE_ENVIRONMENT == 'production' else Cashfree.XSandbox
+if CASHFREE_SDK_AVAILABLE and CASHFREE_CLIENT_ID and CASHFREE_CLIENT_SECRET:
+    cf_env = Cashfree.XProduction if CASHFREE_ENVIRONMENT == 'production' else Cashfree.XSandbox
     cashfree_client = Cashfree(
-        XEnvironment=env,
+        XEnvironment=cf_env,
         XClientId=CASHFREE_CLIENT_ID,
         XClientSecret=CASHFREE_CLIENT_SECRET
     )
     cashfree_client.XRequestTimeout = 30
 
-# In-memory session store (use Redis/DB in production)
-# Structure: { qr_id: { merchant_id, expected_amount, status, created_at, history: [...] } }
+# In-memory session store
 qr_sessions = {}
 
 # Processed webhook events cache for idempotency
 processed_events = set()
 
-# In-memory transaction history store (for demo purposes)
-# Structure: { merchant_id: [ { transaction_id, amount, status, timestamp, ... }, ... ] }
+# In-memory transaction history store
 transaction_history = {}
 
 # ─────────────────────────────────────────────
 # FRAUD DETECTION STATE
 # ─────────────────────────────────────────────
-# Track payment frequency: { "upi_id": [timestamp1, timestamp2, ...] }
 upi_history = {}
-
-# Blocked UPI IDs
 blocked_upi_ids = set()
 
 # ─────────────────────────────────────────────
@@ -96,12 +99,23 @@ def init_db():
 init_db()
 
 
+def log_audit_event(merchant_id, action, amount=0.0, upi_id="", status="INFO", details=""):
+    try:
+        conn = sqlite3.connect('audit.db')
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO audit_log (timestamp, merchant_id, action, amount, upi_id, status, details)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (time.time(), merchant_id, action, amount, upi_id, status, json.dumps(details)))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Audit log error: {e}")
+
+
 def is_live_configured():
-    placeholder_values = {
-        'your_client_id',
-        'your_client_secret',
-        'your_webhook_secret'
-    }
+    """Live mode requires Cashfree credentials for automatic verification"""
+    placeholder_values = {'your_client_id', 'your_client_secret', 'your_webhook_secret'}
     return (
         bool(cashfree_client)
         and CASHFREE_CLIENT_ID not in placeholder_values
@@ -110,16 +124,35 @@ def is_live_configured():
     )
 
 
-def create_demo_qr_response(amount, amount_paise, merchant_id, merchant_name):
-    qr_id = f"demo_qr_{int(time.time())}"
-    upi_string = f"upi://pay?pa=merchant@okaxis&pn={merchant_name}&am={amount}&cu=INR&tn=Bill+Payment"
-
-    # Generate QR image locally in demo mode
-    import segno
+def generate_upi_qr(upi_vpa, merchant_name, amount, txn_ref=""):
+    """Generate a UPI QR code image as base64 PNG using segno."""
+    upi_string = (
+        f"upi://pay?pa={upi_vpa}"
+        f"&pn={quote(merchant_name)}"
+        f"&am={amount}"
+        f"&cu=INR"
+        f"&tn=Bill+Payment+Ref+{txn_ref}"
+        f"&tr={txn_ref}"
+    )
     qr_gen = segno.make(upi_string)
     buffer = io.BytesIO()
     qr_gen.save(buffer, kind='png', scale=10)
     img_b64 = base64.b64encode(buffer.getvalue()).decode()
+    return upi_string, img_b64
+
+
+def generate_url_qr(url):
+    """Generate a QR code from a URL as base64 PNG."""
+    qr_gen = segno.make(url)
+    buffer = io.BytesIO()
+    qr_gen.save(buffer, kind='png', scale=10)
+    img_b64 = base64.b64encode(buffer.getvalue()).decode()
+    return img_b64
+
+
+def create_demo_qr_response(amount, amount_paise, merchant_id, merchant_name):
+    qr_id = f"demo_qr_{int(time.time())}"
+    _, img_b64 = generate_upi_qr("merchant@okaxis", merchant_name, amount, qr_id)
 
     qr_sessions[qr_id] = {
         'merchant_id': merchant_id,
@@ -146,22 +179,9 @@ def create_demo_qr_response(amount, amount_paise, merchant_id, merchant_name):
         'amount': amount,
         'expires_in': 300,
         'demo_mode': True,
-        'mode': 'demo',
-        'upi_string': upi_string
+        'mode': 'demo'
     })
 
-def log_audit_event(merchant_id, action, amount=0.0, upi_id="", status="INFO", details=""):
-    try:
-        conn = sqlite3.connect('audit.db')
-        c = conn.cursor()
-        c.execute('''
-            INSERT INTO audit_log (timestamp, merchant_id, action, amount, upi_id, status, details)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (time.time(), merchant_id, action, amount, upi_id, status, json.dumps(details)))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Audit log error: {e}")
 
 # ─────────────────────────────────────────────
 # ROUTES
@@ -180,8 +200,9 @@ def terminal():
 @app.route('/api/create-qr', methods=['POST'])
 def create_qr():
     """
-    Merchant enters bill amount → generate a locked UPI QR via Cashfree
-    Body: { amount: 450, merchant_id: "shop123", merchant_name: "Sharma Kirana" }
+    Merchant enters bill amount → generate a locked UPI QR.
+    Live mode: Creates Cashfree order → generates QR pointing to Cashfree checkout → webhook auto-verifies.
+    Demo mode: Generates local UPI QR with simulation buttons.
     """
     data = request.json or {}
     amount = data.get('amount')
@@ -200,13 +221,13 @@ def create_qr():
     if mode == 'demo':
         return create_demo_qr_response(amount, amount_paise, merchant_id, merchant_name)
 
+    # --- LIVE MODE: Cashfree Order + Checkout QR + Webhook auto-verification ---
     if not is_live_configured():
         return jsonify({
-            'error': 'Live mode is not configured. Set Cashfree keys/webhook secret or switch to Demo mode.'
+            'error': 'Live mode is not configured. Set Cashfree keys in .env or switch to Demo mode.'
         }), 400
 
     try:
-        # Step 1: Create a Cashfree order
         order_id = f"order_{merchant_id}_{int(time.time())}"
         customer = CustomerDetails(
             customer_id=merchant_id,
@@ -221,36 +242,25 @@ def create_qr():
             order_currency="INR",
             customer_details=customer,
             order_meta=order_meta,
-            order_note=f"Bill payment - ₹{amount} at {merchant_name}"
+            order_note=f"Bill payment - Rs {amount} at {merchant_name}"
         )
 
+        # Step 1: Create Cashfree order (this works without S2S approval)
         order_response = cashfree_client.PGCreateOrder(
             CASHFREE_API_VERSION, order_request
         )
         order_data = order_response.data
         payment_session_id = order_data.payment_session_id
 
-        # Step 2: Pay with UPI QR to get a scannable QR code
-        upi_method = UPIPaymentMethod(
-            upi=Upi(channel="qrcode")
-        )
-        pay_method = PayOrderRequestPaymentMethod(actual_instance=upi_method)
-        pay_request = PayOrderRequest(
-            payment_session_id=payment_session_id,
-            payment_method=pay_method
-        )
+        # Step 2: Build Cashfree checkout URL and generate QR from it
+        # Customer scans QR → opens Cashfree checkout → pays via UPI → webhook fires automatically
+        if CASHFREE_ENVIRONMENT == 'production':
+            checkout_url = f"https://payments.cashfree.com/order/#/{payment_session_id}"
+        else:
+            checkout_url = f"https://sandbox.cashfree.com/pg/order/#/{payment_session_id}"
 
-        pay_response = cashfree_client.PGPayOrder(
-            CASHFREE_API_VERSION, pay_request
-        )
-        pay_data = pay_response.data
+        img_b64 = generate_url_qr(checkout_url)
 
-        # Extract QR code image from response
-        qr_image_b64 = ""
-        if pay_data.data and pay_data.data.payload:
-            qr_image_b64 = pay_data.data.payload.get("qrcode", "")
-
-        # Use order_id as the session key (webhook will reference this)
         qr_sessions[order_id] = {
             'merchant_id': merchant_id,
             'merchant_name': merchant_name,
@@ -263,19 +273,18 @@ def create_qr():
             'payment_session_id': payment_session_id
         }
 
-        # --- AUDIT LOG ---
         log_audit_event(
             merchant_id=merchant_id,
             action="QR_GENERATED",
             amount=float(amount),
             status="SUCCESS",
-            details={"qr_id": order_id, "gateway": "cashfree"}
+            details={"qr_id": order_id, "gateway": "cashfree", "checkout_url": checkout_url}
         )
 
         return jsonify({
             'success': True,
             'qr_id': order_id,
-            'image_b64': f"data:image/png;base64,{qr_image_b64}" if qr_image_b64 else "",
+            'image_b64': f"data:image/png;base64,{img_b64}",
             'amount': amount,
             'expires_in': 300,
             'demo_mode': False,
@@ -291,7 +300,7 @@ def create_qr():
             details={"gateway": "cashfree", "error": str(e)}
         )
         return jsonify({
-            'error': f'Failed to create live Cashfree QR. Verify keys, account status, and network, or switch to Demo mode. ({str(e)})'
+            'error': f'Failed to create payment QR. ({str(e)})'
         }), 502
 
 
@@ -301,8 +310,6 @@ def simulate_payment():
     qr_id = data.get('qr_id')
     paid_amount = float(data.get('amount', 0))
     paid_paise = int(paid_amount * 100)
-    
-    # In demo mode, we allow the client to specify a UPI ID, default to testing
     upi_id = data.get('upi_id', 'demo@upi')
 
     session = qr_sessions.get(qr_id)
@@ -319,33 +326,26 @@ def simulate_payment():
     now = time.time()
     fraud_reasons = []
 
-    # 1. Blocklist Check
     if upi_id in blocked_upi_ids:
         fraud_reasons.append("Blocked UPI ID")
 
-    # 2. Unusual Amount Check
     if paid_amount < 2.0 or paid_amount in [1.0, 0.5, 0.01]:
         fraud_reasons.append("Unusual Attempt Value")
 
-    # 3. Frequency Check (Velocity)
     if upi_id not in upi_history:
         upi_history[upi_id] = deque(maxlen=10)
-    
-    # Clean up old timestamps (> 2 minutes old)
+
     while upi_history[upi_id] and now - upi_history[upi_id][0] > 120:
         upi_history[upi_id].popleft()
-        
-    # If 3 or more payments in the last 2 minutes, flag it!
+
     if len(upi_history[upi_id]) >= 2:
         fraud_reasons.append("High Frequency (Suspected Bot)")
-        blocked_upi_ids.add(upi_id) # Auto-block for future attempts
-        
-    # Record this attempt
+        blocked_upi_ids.add(upi_id)
+
     upi_history[upi_id].append(now)
 
-    # --- Standard Amount Matching ---
     if paid_paise != expected_paise:
-        fraud_reasons.append(f"Amount Mismatch Expected ₹{session['expected_amount_rupees']:.0f}, Got ₹{paid_amount:.0f}")
+        fraud_reasons.append(f"Amount Mismatch Expected Rs {session['expected_amount_rupees']:.0f}, Got Rs {paid_amount:.0f}")
 
     if not fraud_reasons:
         result = {
@@ -353,41 +353,34 @@ def simulate_payment():
             'paid': paid_amount,
             'expected': session['expected_amount_rupees'],
             'upi_id': upi_id,
-            'message': f"₹{paid_amount:.0f} Received ✓"
+            'message': f"Rs {paid_amount:.0f} Received"
         }
         session['status'] = 'paid'
-        
-        # --- AUDIT LOG ---
         log_audit_event(merchant_id, "PAYMENT_RECEIVED", paid_amount, upi_id, "SUCCESS")
-        
     else:
         result = {
-            'status': 'MISMATCH',  # Keep 'MISMATCH' label for frontend compatibility
+            'status': 'MISMATCH',
             'paid': paid_amount,
             'expected': session['expected_amount_rupees'],
             'upi_id': upi_id,
-            'message': f"FRAUD ALERT! { ' | '.join(fraud_reasons) }",
+            'message': f"FRAUD ALERT! {' | '.join(fraud_reasons)}",
             'fraud_reasons': fraud_reasons
         }
         session['status'] = 'mismatch'
-
-        # --- AUDIT LOG ---
-        log_audit_event(merchant_id, "FRAUD_FLAGGED", paid_amount, upi_id, "SUSPICIOUS", {"reasons": fraud_reasons, "expected": session['expected_amount_rupees']})
+        log_audit_event(merchant_id, "FRAUD_FLAGGED", paid_amount, upi_id, "SUSPICIOUS",
+                       {"reasons": fraud_reasons, "expected": session['expected_amount_rupees']})
 
     socketio.emit('payment_result', result, room=merchant_id)
-    
-    # Record demo transaction to history
-    if merchant_id not in transaction_history:
-        transaction_history[merchant_id] = []
-    
-    # Add timestamp and transaction_id for demo history
+
     result_copy = result.copy()
     result_copy['timestamp'] = time.time()
     result_copy['transaction_id'] = f"demo_txn_{int(time.time())}"
     result_copy['qr_id'] = qr_id
+
+    if merchant_id not in transaction_history:
+        transaction_history[merchant_id] = []
     transaction_history[merchant_id].append(result_copy)
-    
-    # Also return result directly so frontend can handle if WebSocket drops
+
     return jsonify({'success': True, 'result': result_copy})
 
 
@@ -395,17 +388,17 @@ def simulate_payment():
 def cashfree_webhook():
     """
     Cashfree calls this URL when a payment is made.
-    Configure this in Cashfree Dashboard → Payment Gateway → Developers → Webhook
+    This enables AUTOMATIC payment verification — no manual confirmation needed.
+    Configure in Cashfree Dashboard → Developers → Webhooks
     """
     raw_body = request.get_data(as_text=True)
     signature = request.headers.get('x-webhook-signature', '')
     timestamp = request.headers.get('x-webhook-timestamp', '')
 
-    # Webhook verification is mandatory for live mode
     if not CASHFREE_WEBHOOK_SECRET or CASHFREE_WEBHOOK_SECRET == 'your_webhook_secret':
         return jsonify({'error': 'Webhook secret not configured'}), 500
 
-    # Verify signature: HMAC-SHA256(secret, "timestamp.raw_body") → base64
+    # Verify signature
     message = f"{timestamp}{raw_body}"
     expected_sig = base64.b64encode(
         hmac.new(
@@ -421,14 +414,14 @@ def cashfree_webhook():
     data = json.loads(raw_body)
     event_type = data.get('type', '')
 
-    # Idempotency Check: Don't process the same webhook event twice
-    event_id = request.headers.get('x-idempotency-key', f"evt_{hashlib.md5(raw_body.encode()).hexdigest()}")
+    # Idempotency
+    event_id = request.headers.get('x-idempotency-key',
+                f"evt_{hashlib.md5(raw_body.encode()).hexdigest()}")
     if event_id in processed_events:
         return jsonify({'status': 'ok', 'message': 'Duplicate event ignored'})
     processed_events.add(event_id)
 
     if event_type == 'PAYMENT_SUCCESS_WEBHOOK':
-        # Extract payment info from Cashfree payload
         payment_data = data.get('data', {})
         order_info = payment_data.get('order', {})
         payment_info = payment_data.get('payment', {})
@@ -438,7 +431,6 @@ def cashfree_webhook():
         paid_paise = int(paid_amount_rupees * 100)
         transaction_id = str(payment_info.get('cf_payment_id', ''))
 
-        # Extract UPI ID from payment method details
         payment_method = payment_info.get('payment_method', {})
         upi_details = payment_method.get('upi', {})
         upi_id = upi_details.get('upi_id', f"payer_{transaction_id[-6:]}@upi")
@@ -447,7 +439,6 @@ def cashfree_webhook():
         if not session:
             return jsonify({'error': 'Session not found'}), 404
 
-        # If already paid, ignore (Secondary idempotency backup)
         if session['status'] == 'paid':
             return jsonify({'status': 'ok', 'message': 'Already processed'})
 
@@ -478,21 +469,19 @@ def cashfree_webhook():
         upi_history[upi_id].append(now)
 
         if paid_paise != expected_paise:
-            fraud_reasons.append(f"Amount Mismatch: Expected ₹{expected_rupees:.0f}, Got ₹{paid_amount_rupees:.0f}")
+            fraud_reasons.append(f"Amount Mismatch: Expected Rs {expected_rupees:.0f}, Got Rs {paid_amount_rupees:.0f}")
 
-        # --- Resolve Check ---
         if not fraud_reasons:
             result = {
                 'status': 'SUCCESS',
                 'paid': paid_amount_rupees,
                 'expected': expected_rupees,
                 'upi_id': upi_id,
-                'message': f"₹{paid_amount_rupees:.0f} Received ✓",
+                'message': f"Rs {paid_amount_rupees:.0f} Received",
                 'transaction_id': transaction_id,
                 'timestamp': time.time()
             }
             session['status'] = 'paid'
-            # --- AUDIT LOG ---
             log_audit_event(merchant_id, "PAYMENT_RECEIVED", paid_amount_rupees, upi_id, "SUCCESS")
         else:
             result = {
@@ -500,21 +489,20 @@ def cashfree_webhook():
                 'paid': paid_amount_rupees,
                 'expected': expected_rupees,
                 'upi_id': upi_id,
-                'message': f"FRAUD ALERT! { ' | '.join(fraud_reasons) }",
+                'message': f"FRAUD ALERT! {' | '.join(fraud_reasons)}",
                 'fraud_reasons': fraud_reasons,
                 'transaction_id': transaction_id,
                 'timestamp': time.time()
             }
             session['status'] = 'mismatch'
-            # --- AUDIT LOG ---
-            log_audit_event(merchant_id, "FRAUD_FLAGGED", paid_amount_rupees, upi_id, "SUSPICIOUS", {"reasons": fraud_reasons, "expected": expected_rupees})
+            log_audit_event(merchant_id, "FRAUD_FLAGGED", paid_amount_rupees, upi_id, "SUSPICIOUS",
+                           {"reasons": fraud_reasons, "expected": expected_rupees})
 
-        # Record to transaction history
         if merchant_id not in transaction_history:
             transaction_history[merchant_id] = []
         transaction_history[merchant_id].append(result)
 
-        # Push real-time to merchant screen
+        # Push real-time to merchant screen — THIS IS THE AUTOMATIC VERIFICATION
         socketio.emit('payment_result', result, room=merchant_id)
 
     return jsonify({'status': 'ok'})
@@ -531,45 +519,42 @@ def get_session(qr_id):
 
 @app.route('/api/history', methods=['GET'])
 def get_history():
-    """Retrieve transaction history for a specific merchant"""
     merchant_id = request.args.get('merchant_id')
     if not merchant_id:
         return jsonify({'error': 'merchant_id required'}), 400
-        
     history = transaction_history.get(merchant_id, [])
-    return jsonify({'success': True, 'history': history[-50:]}) # return last 50
+    return jsonify({'success': True, 'history': history[-50:]})
 
 
 @app.route('/api/audit-logs', methods=['GET'])
 def get_audit_logs():
-    """Retrieve database-backed audit trailing logs for a merchant"""
     merchant_id = request.args.get('merchant_id')
     if not merchant_id:
         return jsonify({'error': 'merchant_id required'}), 400
-    
+
     action_filter = request.args.get('action')
     status_filter = request.args.get('status')
-    
+
     query = "SELECT timestamp, action, amount, upi_id, status, details FROM audit_log WHERE merchant_id = ?"
     params = [merchant_id]
-    
+
     if action_filter and action_filter != 'ALL':
         query += " AND action = ?"
         params.append(action_filter)
-        
+
     if status_filter and status_filter != 'ALL':
         query += " AND status = ?"
         params.append(status_filter)
-        
+
     query += " ORDER BY timestamp DESC LIMIT 100"
-    
+
     try:
         conn = sqlite3.connect('audit.db')
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         c.execute(query, params)
         rows = c.fetchall()
-        
+
         logs = []
         for row in rows:
             logs.append({
@@ -582,43 +567,37 @@ def get_audit_logs():
             })
         conn.close()
         return jsonify({'success': True, 'logs': logs})
-        
+
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/api/analytics', methods=['GET'])
 def get_analytics():
-    """Returns analytics data for a specific merchant"""
     merchant_id = request.args.get('merchant_id')
     if not merchant_id:
         return jsonify({'error': 'merchant_id required'}), 400
-        
+
     history = transaction_history.get(merchant_id, [])
-    
+
     total_txns = len(history)
     success_count = sum(1 for t in history if t.get('status') == 'SUCCESS')
     fraud_count = total_txns - success_count
     success_rate = round((success_count / total_txns * 100) if total_txns > 0 else 0, 1)
 
-    # Calculate last 7 days revenue
     from datetime import datetime, timedelta
     today = datetime.now().date()
-    
-    daily_revenue = { (today - timedelta(days=i)).strftime('%b %d'): 0 for i in range(6, -1, -1) }
-    hourly_distribution = { f"{i:02d}:00": 0 for i in range(24) }
+
+    daily_revenue = {(today - timedelta(days=i)).strftime('%b %d'): 0 for i in range(6, -1, -1)}
+    hourly_distribution = {f"{i:02d}:00": 0 for i in range(24)}
 
     for t in history:
         if 'timestamp' in t:
             dt = datetime.fromtimestamp(t['timestamp'])
-            
-            # Daily revenue (only successful transactions)
             if t.get('status') == 'SUCCESS':
                 date_str = dt.strftime('%b %d')
                 if date_str in daily_revenue:
                     daily_revenue[date_str] += t.get('paid', 0)
-            
-            # Hourly distribution (all transactions)
             hour_str = f"{dt.hour:02d}:00"
             if hour_str in hourly_distribution:
                 hourly_distribution[hour_str] += 1
@@ -645,18 +624,15 @@ def get_analytics():
 
 @app.route('/api/receipt/<qr_id>', methods=['GET'])
 def get_receipt(qr_id):
-    """Generate a printable HTML receipt for a successful payment"""
     session = qr_sessions.get(qr_id)
     if not session or session.get('status') != 'paid':
         return "Receipt not found or payment not completed.", 404
-        
-    # In a real app, we'd query the DB/transaction_history for the exact matching transaction.
-    # We can reconstruct it from the session details for the demo.
+
     paid_amount = session['expected_amount_rupees']
     merchant_name = session['merchant_name']
     transaction_id = request.args.get('txn_id', 'AUTO-GEN')
     date_str = time.strftime('%d %b %Y, %I:%M %p')
-    
+
     html = f"""
     <!DOCTYPE html>
     <html>
@@ -679,23 +655,19 @@ def get_receipt(qr_id):
                 <div class="brand">{merchant_name}</div>
                 <div>UPI-Guard AI Receipt</div>
             </div>
-            
             <div class="row"><span>Date:</span> <span>{date_str}</span></div>
             <div class="row"><span>QR ID:</span> <span>{qr_id}</span></div>
             <div class="row"><span>TXN ID:</span> <span>{transaction_id}</span></div>
-            <div class="row"><span>Status:</span> <span>SUCCESS ✓</span></div>
-            
+            <div class="row"><span>Status:</span> <span>SUCCESS</span></div>
             <div class="row total-row">
                 <span>TOTAL PAID</span>
-                <span>₹{paid_amount}</span>
+                <span>Rs {paid_amount}</span>
             </div>
-            
             <div class="footer">
                 Thank you for your payment.<br>
                 Powered by UPI-Guard AI.
             </div>
         </div>
-        
         <div class="no-print" style="text-align:center; margin-top: 20px;">
             <button onclick="window.print()" style="padding: 10px 20px; font-weight:bold; cursor:pointer;">Print / Download PDF</button>
         </div>
@@ -711,11 +683,11 @@ def get_receipt(qr_id):
 
 @socketio.on('join')
 def on_join(data):
-    """Merchant joins their own room to receive payment notifications"""
     merchant_id = data.get('merchant_id', 'default_merchant')
     join_room(merchant_id)
     emit('joined', {'room': merchant_id})
 
 
 if __name__ == '__main__':
-    socketio.run(app, debug=True, host='0.0.0.0', port=5000)
+    print(" * Starting server on http://127.0.0.1:5000")
+    socketio.run(app, debug=False, host='127.0.0.1', port=5000)

@@ -668,7 +668,7 @@ function App() {
 
                   <div className="muted" style={{ marginBottom: 10 }}>
                     {paymentMode === "live"
-                      ? "Live mode waits for real Cashfree webhook payment confirmation."
+                      ? "Live mode: customer scans QR, pays via Cashfree, payment verified automatically."
                       : "Demo mode allows instant simulation for testing."}
                   </div>
 
@@ -726,6 +726,12 @@ function App() {
                         <button className="btn-demo safe" onClick={() => simulatePayment(currentAmount)}>Exact Amount</button>
                         <button className="btn-demo fraud" onClick={() => simulatePayment(1)}>Pay Rs 1</button>
                       </div>
+                    </div>
+                  )}
+
+                  {!isDemoMode && (
+                    <div className="muted" style={{ textAlign: "center", margin: "8px 0" }}>
+                      Waiting for payment... verification is automatic.
                     </div>
                   )}
 
