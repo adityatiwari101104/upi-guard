@@ -4,10 +4,6 @@ Run: python app.py
 Webhook URL for Cashfree: https://your-domain.com/webhook
 """
 
-import eventlet
-import eventlet.tpool
-eventlet.monkey_patch(os=True, select=True, socket=False, thread=True, time=True)
-
 import os
 import hmac
 import hashlib
@@ -37,7 +33,7 @@ load_dotenv()
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-prod')
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # Cashfree config
 CASHFREE_CLIENT_ID = os.getenv('CASHFREE_CLIENT_ID', '').strip()
@@ -246,11 +242,8 @@ def create_qr():
             order_note=f"Bill payment - Rs {amount} at {merchant_name}"
         )
 
-        # Step 1: Create Cashfree order (run in native thread to avoid eventlet DNS issues)
-        def _create_order():
-            return cashfree_client.PGCreateOrder(CASHFREE_API_VERSION, order_request)
-
-        order_response = eventlet.tpool.execute(_create_order)
+        # Step 1: Create Cashfree order (no S2S approval needed)
+        order_response = cashfree_client.PGCreateOrder(CASHFREE_API_VERSION, order_request)
         order_data = order_response.data
         payment_session_id = order_data.payment_session_id
 
@@ -692,4 +685,4 @@ def on_join(data):
 
 if __name__ == '__main__':
     print(" * Starting server on http://127.0.0.1:5000")
-    socketio.run(app, debug=False, host='127.0.0.1', port=5000)
+    socketio.run(app, debug=True, host='0.0.0.0', port=5000)
