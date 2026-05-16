@@ -596,23 +596,57 @@ function App() {
       <header className="topbar">
         <div className="brand">
           <div className="brand-mark">U</div>
-          <div className="brand-name">UPI Guard Terminal</div>
+          <div className="brand-block">
+            <div className="brand-name">UPI Guard Dashboard</div>
+            <div className="brand-sub">Standard</div>
+          </div>
           <a className="back-link" href="/">Public Landing</a>
         </div>
 
-        <div className="view-toggle">
-          <button className={`view-btn ${view === "terminal" ? "active" : ""}`} onClick={() => setView("terminal")}>Terminal</button>
-          <button className={`view-btn ${view === "analytics" ? "active" : ""}`} onClick={() => setView("analytics")}>Analytics</button>
-          <button className={`view-btn ${view === "audit" ? "active" : ""}`} onClick={() => setView("audit")}>Audit Trail</button>
-        </div>
-
-        <div className="status-pill">
-          <span className={`dot ${connected ? "live" : ""}`} />
-          {connected ? "Live Session" : "Offline"}
+        <div className="top-actions">
+          <input className="top-search" placeholder="Search payments, settings, logs..." />
+          <button className="icon-btn" aria-label="Notifications">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 3a5 5 0 0 0-5 5v2.6c0 .7-.2 1.4-.6 2L5 15v1h14v-1l-1.4-2.4c-.4-.6-.6-1.3-.6-2V8a5 5 0 0 0-5-5Zm0 18a2.5 2.5 0 0 0 2.4-2h-4.8A2.5 2.5 0 0 0 12 21Z" />
+            </svg>
+          </button>
+          <button className="icon-btn" aria-label="Broadcast">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 10v4h3l4 4V6L6 10H3Zm12.5 2a3.5 3.5 0 0 0-2.5-3.35v6.7A3.5 3.5 0 0 0 15.5 12Zm0-7a1 1 0 0 0-.7 1.7A7.5 7.5 0 0 1 17.5 12a7.5 7.5 0 0 1-2.7 5.3 1 1 0 0 0 1.4 1.4A9.5 9.5 0 0 0 19.5 12a9.5 9.5 0 0 0-3.3-7.1 1 1 0 0 0-.7-.3Z" />
+            </svg>
+          </button>
+          <div className="profile-chip">{merchantAvatar || "AT"}</div>
+          <div className="status-pill">
+            <span className={`dot ${connected ? "live" : ""}`} />
+            {connected ? "Connected" : "Offline"}
+          </div>
         </div>
       </header>
 
       <main className="page">
+        <div className="dashboard-shell">
+          <aside className="side-nav">
+            <div className="side-group">
+              <div className="side-title">Main</div>
+              <button className={`side-link ${view === "terminal" ? "active" : ""}`} onClick={() => setView("terminal")}>Home</button>
+              <button className={`side-link ${view === "analytics" ? "active" : ""}`} onClick={() => setView("analytics")}>Transactions</button>
+              <button className={`side-link ${view === "audit" ? "active" : ""}`} onClick={() => setView("audit")}>Settlements</button>
+            </div>
+            <div className="side-group">
+              <div className="side-title">Payment Products</div>
+              <div className="side-text">Payment Links</div>
+              <div className="side-text">Payment Pages</div>
+              <div className="side-text">Razorpay.me Link</div>
+            </div>
+            <div className="side-group">
+              <div className="side-title">Customer Products</div>
+              <div className="side-text">Customers</div>
+              <div className="side-text">Offers</div>
+              <div className="side-text">Developers</div>
+            </div>
+          </aside>
+
+          <section className="dashboard-content">
         {view === "terminal" && (
           <section className="terminal-grid">
             <div className="col">
@@ -900,6 +934,8 @@ function App() {
             </div>
           </section>
         )}
+          </section>
+        </div>
       </main>
 
       {result.open && (

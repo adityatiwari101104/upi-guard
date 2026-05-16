@@ -905,3 +905,280 @@ td {
     transition: none !important;
   }
 }
+
+/* Razorpay-inspired dashboard skin */
+:root {
+  --bg-main: #f5f7fb;
+  --bg-wash: #eef2f8;
+  --card-bg: #ffffff;
+  --ink-strong: #1d2939;
+  --ink-soft: #667085;
+  --line: #e4e7ec;
+  --brand-blue: #2b6fe8;
+}
+
+body {
+  background: linear-gradient(180deg, #f8f9fc 0%, #eef2f8 100%);
+}
+
+body::before {
+  display: none;
+}
+
+.topbar {
+  background: #0b1220;
+  border-bottom: 1px solid #1e293b;
+  padding: 12px 20px;
+  position: relative;
+  overflow: hidden;
+}
+
+.topbar::after {
+  content: "";
+  position: absolute;
+  left: 210px;
+  top: -30px;
+  width: 280px;
+  height: 120px;
+  background: radial-gradient(circle, rgba(37, 99, 235, 0.38) 0%, rgba(37, 99, 235, 0) 70%);
+  pointer-events: none;
+}
+
+.brand-name,
+.back-link,
+.status-pill {
+  color: #d0d5dd;
+}
+
+.back-link {
+  color: #98a2b3;
+}
+
+.brand-block {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.brand-sub {
+  color: #93c5fd;
+  font-style: italic;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.view-toggle {
+  background: #111827;
+  border: 1px solid #1f2937;
+  box-shadow: none;
+}
+
+.view-btn {
+  color: #cbd5e1;
+}
+
+.view-btn.active {
+  background: linear-gradient(120deg, #2563eb, #3b82f6);
+}
+
+.status-pill {
+  background: #111827;
+  border: 1px solid #1f2937;
+}
+
+.top-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.top-search {
+  width: min(420px, 36vw);
+  background: #111827;
+  color: #cbd5e1;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 14px;
+}
+
+.top-search::placeholder {
+  color: #94a3b8;
+}
+
+.top-search:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+}
+
+.icon-btn {
+  border: 1px solid #334155;
+  background: #111827;
+  color: #cbd5e1;
+  border-radius: 10px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-btn:hover {
+  background: #1f2937;
+}
+
+.icon-btn svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+.profile-chip {
+  min-width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: #1d4ed8;
+  color: #fff;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #3b82f6;
+}
+
+.page {
+  max-width: 1380px;
+  padding-top: 18px;
+}
+
+.terminal-grid {
+  grid-template-columns: 300px 1fr;
+  gap: 20px;
+}
+
+.card,
+.metric-card,
+.chart-card,
+.filter-bar,
+.table-wrap {
+  border: 1px solid var(--line);
+  background: var(--card-bg);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
+}
+
+.card-head {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 14px;
+  color: #344054;
+}
+
+.merchant {
+  background: #f9fafb;
+}
+
+.btn-main {
+  background: linear-gradient(120deg, #2563eb, #3b82f6);
+}
+
+.btn-ghost {
+  border-color: #d0d5dd;
+  color: #344054;
+  background: #fff;
+}
+
+.history-item,
+table tbody tr {
+  border-color: #eaecf0;
+}
+
+.dashboard-shell {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+.dashboard-content {
+  min-width: 0;
+}
+
+.side-nav {
+  background: #f8fafc;
+  border: 1px solid #e4e7ec;
+  border-radius: 14px;
+  padding: 14px;
+  position: sticky;
+  top: 82px;
+  max-height: calc(100vh - 100px);
+  overflow: auto;
+}
+
+.side-group {
+  margin-bottom: 18px;
+}
+
+.side-title {
+  font-size: 12px;
+  color: #667085;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 8px;
+}
+
+.side-link,
+.side-text {
+  width: 100%;
+  text-align: left;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+  color: #344054;
+  margin-bottom: 4px;
+}
+
+.side-link {
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.side-link:hover {
+  background: #eef2ff;
+}
+
+.side-link.active {
+  background: #eaf0ff;
+  border-color: #c7d7fe;
+  color: #1d4ed8;
+}
+
+.side-text {
+  color: #667085;
+}
+
+@media (max-width: 980px) {
+  .dashboard-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .side-nav {
+    position: static;
+    max-height: none;
+  }
+
+  .top-actions {
+    width: 100%;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  .top-search {
+    width: 100%;
+  }
+}
