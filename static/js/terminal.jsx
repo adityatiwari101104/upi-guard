@@ -77,6 +77,7 @@ function App() {
   const [currentAmount, setCurrentAmount] = useState(0);
   const [qrImage, setQrImage] = useState("");
   const [isDemoMode, setIsDemoMode] = useState(false);
+  const [currentFlowMode, setCurrentFlowMode] = useState("");
   const [demoUpiId, setDemoUpiId] = useState("demo@upi");
   const [paymentMode, setPaymentMode] = useState(localStorage.getItem("upiguard_payment_mode") || "live");
   const [qrError, setQrError] = useState("");
@@ -200,6 +201,7 @@ function App() {
     setCurrentAmount(0);
     setQrImage("");
     setIsDemoMode(false);
+    setCurrentFlowMode("");
     setQrError("");
     setTimerRemaining(0);
     setTimerTotal(0);
@@ -295,6 +297,22 @@ function App() {
 
     return () => clearInterval(timer);
   }, [screen, timerRemaining]);
+
+  useEffect(() => {
+    if (screen !== "qr" || !currentQrId || isDemoMode) {
+      return undefined;
+    }
+
+    const poller = setInterval(async () => {
+      try {
+        await fetch(`/api/check-payment/${encodeURIComponent(currentQrId)}`);
+      } catch (err) {
+        console.warn("Payment status poll failed", err);
+      }
+    }, 3000);
+
+    return () => clearInterval(poller);
+  }, [screen, currentQrId, isDemoMode]);
 
   useEffect(() => {
     if (screen === "qr" && timerRemaining <= 0 && currentQrId) {
@@ -449,15 +467,25 @@ function App() {
     setCreatingQr(true);
 
     try {
-      const res = await fetch("/api/create-qr", {
+      const endpoint = paymentMode === "mock" ? "/api/orders" : "/api/create-qr";
+      const payload =
+        paymentMode === "mock"
+          ? {
+              amount,
+              merchant_id: merchantId,
+              merchant_name: merchantName,
+            }
+          : {
+              amount,
+              merchant_id: merchantId,
+              merchant_name: merchantName,
+              mode: paymentMode,
+            };
+
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          amount,
-          merchant_id: merchantId,
-          merchant_name: merchantName,
-          mode: paymentMode,
-        }),
+        body: JSON.stringify(payload),
       });
 
       const data = await res.json();
@@ -466,6 +494,7 @@ function App() {
         setCurrentAmount(amount);
         setQrImage(data.image_b64 || data.image_url || "");
         setIsDemoMode(Boolean(data.demo_mode));
+        setCurrentFlowMode(data.mode || paymentMode);
         const expiry = Number(data.expires_in) || 300;
         setTimerTotal(expiry);
         setTimerRemaining(expiry);
@@ -487,14 +516,24 @@ function App() {
     }
 
     try {
-      const res = await fetch("/api/simulate-payment", {
+      const endpoint = currentFlowMode === "mock" ? "/mock-gateway/pay" : "/api/simulate-payment";
+      const payload =
+        currentFlowMode === "mock"
+          ? {
+              order_id: currentQrId,
+              paid_amount: amount,
+              upi_id: demoUpiId || "demo@upi",
+            }
+          : {
+              qr_id: currentQrId,
+              amount,
+              upi_id: demoUpiId || "demo@upi",
+            };
+
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          qr_id: currentQrId,
-          amount,
-          upi_id: demoUpiId || "demo@upi",
-        }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (data.result) {
@@ -664,12 +703,20 @@ function App() {
                     >
                       Demo
                     </button>
+                    <button
+                      className={`view-btn ${paymentMode === "mock" ? "active" : ""}`}
+                      onClick={() => onModeChange("mock")}
+                    >
+                      Mock
+                    </button>
                   </div>
 
                   <div className="muted" style={{ marginBottom: 10 }}>
                     {paymentMode === "live"
-                      ? "Live mode: customer scans QR, pays via Cashfree, payment verified automatically."
-                      : "Demo mode allows instant simulation for testing."}
+                      ? "Live mode: gateway-driven verification."
+                      : paymentMode === "demo"
+                        ? "Demo mode allows instant local simulation."
+                        : "Mock mode: real UPI deep-link QR + simulated gateway webhook."}
                   </div>
 
                   {qrError && <div className="small-danger" style={{ marginBottom: 10 }}>{qrError}</div>}
@@ -712,9 +759,9 @@ function App() {
                     </div>
                   </div>
 
-                  {isDemoMode && (
+                  {(isDemoMode || currentFlowMode === "mock") && (
                     <div className="demo-box">
-                      <div className="demo-caption">Simulate Demo Payment</div>
+                      <div className="demo-caption">{currentFlowMode === "mock" ? "Simulate Mock Gateway Payment" : "Simulate Demo Payment"}</div>
                       <input
                         className="demo-input"
                         type="text"

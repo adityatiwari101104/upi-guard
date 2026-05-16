@@ -1,7 +1,7 @@
 """
 UPI Guard - Backend Server
 Run: python app.py
-Webhook URL for Cashfree: https://your-domain.com/webhook
+Webhook URL (optional): https://your-domain.com/webhook
 """
 
 import os
@@ -12,22 +12,15 @@ import time
 import io
 import base64
 import sqlite3
+import tempfile
 import segno
 from urllib.parse import quote
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 from collections import deque
 from flask import Flask, request, jsonify, render_template
 from flask_socketio import SocketIO, emit, join_room
 from dotenv import load_dotenv
-
-# Cashfree SDK (only needed for live mode order creation)
-try:
-    from cashfree_pg.api_client import Cashfree
-    from cashfree_pg.models.create_order_request import CreateOrderRequest
-    from cashfree_pg.models.customer_details import CustomerDetails
-    from cashfree_pg.models.order_meta import OrderMeta
-    CASHFREE_SDK_AVAILABLE = True
-except ImportError:
-    CASHFREE_SDK_AVAILABLE = False
 
 load_dotenv()
 
@@ -35,33 +28,21 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-prod')
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
-# Cashfree config
-CASHFREE_CLIENT_ID = os.getenv('CASHFREE_CLIENT_ID', '').strip()
-CASHFREE_CLIENT_SECRET = os.getenv('CASHFREE_CLIENT_SECRET', '').strip()
-CASHFREE_WEBHOOK_SECRET = os.getenv('CASHFREE_WEBHOOK_SECRET', '').strip()
-CASHFREE_ENVIRONMENT = os.getenv('CASHFREE_ENVIRONMENT', 'sandbox').strip().lower()
 PAYMENT_MODE_DEFAULT = os.getenv('PAYMENT_MODE_DEFAULT', 'live').strip().lower()
-CASHFREE_API_VERSION = "2023-08-01"
+
+# PhonePe config
+PHONEPE_CLIENT_ID = os.getenv('PHONEPE_CLIENT_ID', '').strip()
+PHONEPE_CLIENT_SECRET = os.getenv('PHONEPE_CLIENT_SECRET', '').strip()
+PHONEPE_CLIENT_VERSION = os.getenv('PHONEPE_CLIENT_VERSION', '1').strip()
+PHONEPE_ENVIRONMENT = os.getenv('PHONEPE_ENVIRONMENT', 'sandbox').strip().lower()
 
 # Merchant UPI VPA fallback for direct QR mode
 MERCHANT_UPI_VPA = os.getenv('MERCHANT_UPI_VPA', '').strip()
-
-# Initialize Cashfree client
-cashfree_client = None
-if CASHFREE_SDK_AVAILABLE and CASHFREE_CLIENT_ID and CASHFREE_CLIENT_SECRET:
-    cf_env = Cashfree.XProduction if CASHFREE_ENVIRONMENT == 'production' else Cashfree.XSandbox
-    cashfree_client = Cashfree(
-        XEnvironment=cf_env,
-        XClientId=CASHFREE_CLIENT_ID,
-        XClientSecret=CASHFREE_CLIENT_SECRET
-    )
-    cashfree_client.XRequestTimeout = 30
+MOCK_WEBHOOK_SECRET = os.getenv('MOCK_WEBHOOK_SECRET', 'mock_webhook_secret').strip()
+DB_PATH = os.getenv('DB_PATH', os.path.join(tempfile.gettempdir(), 'upi_guard_audit.db')).strip()
 
 # In-memory session store
 qr_sessions = {}
-
-# Processed webhook events cache for idempotency
-processed_events = set()
 
 # In-memory transaction history store
 transaction_history = {}
@@ -76,7 +57,7 @@ blocked_upi_ids = set()
 # DATABASE SETUP (AUDIT TRAIL)
 # ─────────────────────────────────────────────
 def init_db():
-    conn = sqlite3.connect('audit.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''
         CREATE TABLE IF NOT EXISTS audit_log (
@@ -90,15 +71,129 @@ def init_db():
             details TEXT
         )
     ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS orders (
+            order_id TEXT PRIMARY KEY,
+            merchant_id TEXT NOT NULL,
+            merchant_name TEXT NOT NULL,
+            amount_expected REAL NOT NULL,
+            upi_uri TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            expires_at REAL NOT NULL
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS payments (
+            payment_id TEXT PRIMARY KEY,
+            order_id TEXT NOT NULL,
+            amount_paid REAL NOT NULL,
+            upi_id TEXT,
+            status TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            FOREIGN KEY (order_id) REFERENCES orders(order_id)
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS webhook_events (
+            event_id TEXT PRIMARY KEY,
+            order_id TEXT,
+            payment_id TEXT,
+            event_type TEXT NOT NULL,
+            payload_json TEXT,
+            signature TEXT,
+            delivery_status TEXT NOT NULL,
+            attempt INTEGER NOT NULL DEFAULT 1,
+            created_at REAL NOT NULL
+        )
+    ''')
     conn.commit()
     conn.close()
 
 init_db()
 
 
+def get_db_connection():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def create_order_record(order_id, merchant_id, merchant_name, amount_expected, upi_uri, expires_in=300):
+    created_at = time.time()
+    expires_at = created_at + int(expires_in)
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO orders (order_id, merchant_id, merchant_name, amount_expected, upi_uri, status, created_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (order_id, merchant_id, merchant_name, float(amount_expected), upi_uri, 'created', created_at, expires_at))
+    conn.commit()
+    conn.close()
+    return created_at, expires_at
+
+
+def get_order_record(order_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('SELECT * FROM orders WHERE order_id = ?', (order_id,))
+    row = c.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def update_order_status(order_id, status):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('UPDATE orders SET status = ? WHERE order_id = ?', (status, order_id))
+    conn.commit()
+    conn.close()
+
+
+def create_payment_record(payment_id, order_id, amount_paid, upi_id, status):
+    created_at = time.time()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO payments (payment_id, order_id, amount_paid, upi_id, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (payment_id, order_id, float(amount_paid), upi_id, status, created_at))
+    conn.commit()
+    conn.close()
+    return created_at
+
+
+def get_latest_payment_for_order(order_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('SELECT * FROM payments WHERE order_id = ? ORDER BY created_at DESC LIMIT 1', (order_id,))
+    row = c.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def create_webhook_signature(payload_text):
+    return hmac.new(
+        MOCK_WEBHOOK_SECRET.encode(),
+        payload_text.encode(),
+        hashlib.sha256
+    ).hexdigest()
+
+
+def log_webhook_event(event_id, order_id, payment_id, event_type, payload_json, signature, delivery_status, attempt=1):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('''
+        INSERT OR REPLACE INTO webhook_events (event_id, order_id, payment_id, event_type, payload_json, signature, delivery_status, attempt, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (event_id, order_id, payment_id, event_type, json.dumps(payload_json), signature, delivery_status, int(attempt), time.time()))
+    conn.commit()
+    conn.close()
+
+
 def log_audit_event(merchant_id, action, amount=0.0, upi_id="", status="INFO", details=""):
     try:
-        conn = sqlite3.connect('audit.db')
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute('''
             INSERT INTO audit_log (timestamp, merchant_id, action, amount, upi_id, status, details)
@@ -111,14 +206,67 @@ def log_audit_event(merchant_id, action, amount=0.0, upi_id="", status="INFO", d
 
 
 def is_live_configured():
-    """Live mode requires Cashfree credentials for automatic verification"""
-    placeholder_values = {'your_client_id', 'your_client_secret', 'your_webhook_secret'}
+    """Live mode requires PhonePe client credentials."""
+    placeholder_values = {'your_client_id', 'your_client_secret'}
     return (
-        bool(cashfree_client)
-        and CASHFREE_CLIENT_ID not in placeholder_values
-        and CASHFREE_CLIENT_SECRET not in placeholder_values
-        and CASHFREE_WEBHOOK_SECRET not in placeholder_values
+        PHONEPE_CLIENT_ID
+        and PHONEPE_CLIENT_SECRET
+        and PHONEPE_CLIENT_ID not in placeholder_values
+        and PHONEPE_CLIENT_SECRET not in placeholder_values
     )
+
+
+def get_phonepe_base_url():
+    if PHONEPE_ENVIRONMENT == 'production':
+        return "https://api.phonepe.com/apis/hermes"
+    return "https://api-preprod.phonepe.com/apis/pg-sandbox"
+
+
+def phonepe_request(method, path, token=None, body=None, form=False):
+    url = f"{get_phonepe_base_url()}{path}"
+    headers = {}
+    payload = None
+
+    if token:
+        headers['Authorization'] = f"O-Bearer {token}"
+
+    if body is not None:
+        if form:
+            headers['Content-Type'] = 'application/x-www-form-urlencoded'
+            payload = urlencode(body).encode()
+        else:
+            headers['Content-Type'] = 'application/json'
+            payload = json.dumps(body).encode()
+
+    req = Request(url=url, method=method.upper(), headers=headers, data=payload)
+    with urlopen(req, timeout=20) as resp:
+        raw = resp.read().decode()
+        if not raw:
+            return {}
+        return json.loads(raw)
+
+
+def get_phonepe_access_token():
+    response = phonepe_request(
+        method='POST',
+        path='/v1/oauth/token',
+        body={
+            'client_id': PHONEPE_CLIENT_ID,
+            'client_secret': PHONEPE_CLIENT_SECRET,
+            'client_version': PHONEPE_CLIENT_VERSION,
+            'grant_type': 'client_credentials'
+        },
+        form=True
+    )
+
+    token = (
+        response.get('access_token')
+        or response.get('accessToken')
+        or response.get('data', {}).get('accessToken')
+    )
+    if not token:
+        raise RuntimeError(f"PhonePe auth failed: {response}")
+    return token
 
 
 def generate_upi_qr(upi_vpa, merchant_name, amount, txn_ref=""):
@@ -194,13 +342,179 @@ def terminal():
     return render_template('terminal.html')
 
 
+@app.route('/api/orders', methods=['POST'])
+def create_order():
+    data = request.json or {}
+    amount = data.get('amount')
+    merchant_id = str(data.get('merchant_id', 'default_merchant')).strip()
+    merchant_name = str(data.get('merchant_name', 'Merchant')).strip()
+
+    try:
+        amount_value = float(amount)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Invalid amount'}), 400
+
+    if amount_value <= 0:
+        return jsonify({'error': 'Invalid amount'}), 400
+
+    if not MERCHANT_UPI_VPA:
+        return jsonify({'error': 'MERCHANT_UPI_VPA is not configured in .env'}), 400
+
+    order_id = f"order_{merchant_id}_{int(time.time())}"
+    upi_uri, img_b64 = generate_upi_qr(
+        upi_vpa=MERCHANT_UPI_VPA,
+        merchant_name=merchant_name,
+        amount=f"{amount_value:.2f}",
+        txn_ref=order_id
+    )
+    created_at, expires_at = create_order_record(
+        order_id=order_id,
+        merchant_id=merchant_id,
+        merchant_name=merchant_name,
+        amount_expected=amount_value,
+        upi_uri=upi_uri,
+        expires_in=300
+    )
+
+    qr_sessions[order_id] = {
+        'merchant_id': merchant_id,
+        'merchant_name': merchant_name,
+        'expected_amount': int(amount_value * 100),
+        'expected_amount_rupees': amount_value,
+        'status': 'pending',
+        'created_at': created_at,
+        'demo': True,
+        'mode': 'mock'
+    }
+
+    log_audit_event(
+        merchant_id=merchant_id,
+        action="ORDER_CREATED",
+        amount=amount_value,
+        status="SUCCESS",
+        details={"order_id": order_id, "gateway": "mock", "upi_vpa": MERCHANT_UPI_VPA}
+    )
+
+    return jsonify({
+        'success': True,
+        'order_id': order_id,
+        'qr_id': order_id,
+        'upi_uri': upi_uri,
+        'image_b64': f"data:image/png;base64,{img_b64}",
+        'amount': amount_value,
+        'expires_in': int(expires_at - created_at),
+        'mode': 'mock'
+    })
+
+
+@app.route('/api/orders/<order_id>', methods=['GET'])
+def get_order(order_id):
+    order = get_order_record(order_id)
+    if not order:
+        return jsonify({'error': 'Order not found'}), 404
+
+    payment = get_latest_payment_for_order(order_id)
+    return jsonify({
+        'success': True,
+        'order': order,
+        'payment': payment
+    })
+
+
+@app.route('/mock-gateway/pay', methods=['POST'])
+def mock_gateway_pay():
+    data = request.json or {}
+    order_id = str(data.get('order_id', '')).strip()
+    upi_id = str(data.get('upi_id', 'payer@upi')).strip()
+
+    if not order_id:
+        return jsonify({'error': 'order_id required'}), 400
+
+    order = get_order_record(order_id)
+    if not order:
+        return jsonify({'error': 'Order not found'}), 404
+
+    try:
+        paid_amount = float(data.get('paid_amount', order.get('amount_expected', 0.0)))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Invalid paid_amount'}), 400
+
+    event_type = 'payment.captured' if paid_amount > 0 else 'payment.failed'
+    payment_status = 'captured' if event_type == 'payment.captured' else 'failed'
+    payment_id = f"pay_mock_{int(time.time() * 1000)}"
+    create_payment_record(payment_id, order_id, paid_amount, upi_id, payment_status)
+    update_order_status(order_id, payment_status)
+
+    payload = {
+        "entity": "event",
+        "account_id": "acc_mock_001",
+        "event": event_type,
+        "contains": ["payment", "order"],
+        "payload": {
+            "payment": {
+                "entity": {
+                    "id": payment_id,
+                    "entity": "payment",
+                    "amount": int(round(paid_amount * 100)),
+                    "currency": "INR",
+                    "status": payment_status,
+                    "order_id": order_id,
+                    "method": "upi",
+                    "vpa": upi_id,
+                    "captured": True if payment_status == 'captured' else False,
+                    "created_at": int(time.time())
+                }
+            },
+            "order": {
+                "entity": {
+                    "id": order_id,
+                    "entity": "order",
+                    "amount": int(round(float(order['amount_expected']) * 100)),
+                    "currency": "INR",
+                    "status": payment_status,
+                    "created_at": int(order['created_at'])
+                }
+            }
+        },
+        "created_at": int(time.time())
+    }
+
+    payload_text = json.dumps(payload, separators=(',', ':'))
+    signature = create_webhook_signature(payload_text)
+
+    with app.test_request_context(
+        '/webhook/razorpay-mock',
+        method='POST',
+        data=payload_text,
+        headers={'X-Razorpay-Signature': signature, 'Content-Type': 'application/json'}
+    ):
+        webhook_response = razorpay_mock_webhook()
+
+    event_id = f"evt_{payment_id}"
+    log_webhook_event(
+        event_id=event_id,
+        order_id=order_id,
+        payment_id=payment_id,
+        event_type=event_type,
+        payload_json=payload,
+        signature=signature,
+        delivery_status='delivered',
+        attempt=1
+    )
+
+    return jsonify({
+        'success': True,
+        'event': event_type,
+        'payment_id': payment_id,
+        'order_id': order_id,
+        'signature': signature,
+        'webhook_result': webhook_response[0].get_json() if isinstance(webhook_response, tuple) else webhook_response.get_json()
+    })
+
+
 @app.route('/api/create-qr', methods=['POST'])
 def create_qr():
-    """
-    Merchant enters bill amount → generate a locked UPI QR.
-    Live mode: Creates Cashfree order → generates QR pointing to Cashfree checkout → webhook auto-verifies.
-    Demo mode: Generates local UPI QR with simulation buttons.
-    """
+    """Merchant enters amount and app creates a locked QR."""
     data = request.json or {}
     amount = data.get('amount')
     merchant_id = data.get('merchant_id', 'default_merchant')
@@ -218,41 +532,37 @@ def create_qr():
     if mode == 'demo':
         return create_demo_qr_response(amount, amount_paise, merchant_id, merchant_name)
 
-    # --- LIVE MODE: Cashfree Order + Checkout QR + Webhook auto-verification ---
     if not is_live_configured():
-        return jsonify({
-            'error': 'Live mode is not configured. Set Cashfree keys in .env or switch to Demo mode.'
-        }), 400
+        return jsonify({'error': 'Live mode is not configured. Set PhonePe keys in .env or switch to Demo mode.'}), 400
 
     try:
         order_id = f"order_{merchant_id}_{int(time.time())}"
-        customer = CustomerDetails(
-            customer_id=merchant_id,
-            customer_phone="9999999999"
+        token = get_phonepe_access_token()
+        pay_response = phonepe_request(
+            method='POST',
+            path='/checkout/v2/pay',
+            token=token,
+            body={
+                "merchantOrderId": order_id,
+                "amount": amount_paise,
+                "expireAfter": 300,
+                "metaInfo": {"udf1": merchant_id, "udf2": merchant_name},
+                "paymentFlow": {
+                    "type": "PG_CHECKOUT",
+                    "merchantUrls": {
+                        "redirectUrl": request.host_url.rstrip('/') + f"/terminal?order_id={order_id}"
+                    }
+                }
+            }
         )
-        order_meta = OrderMeta(
-            return_url=f"https://upi-guard-568m.onrender.com/terminal?order_id={order_id}"
+        checkout_url = (
+            pay_response.get('paymentUrl')
+            or pay_response.get('data', {}).get('paymentUrl')
+            or pay_response.get('redirectUrl')
+            or pay_response.get('data', {}).get('redirectUrl')
         )
-        order_request = CreateOrderRequest(
-            order_id=order_id,
-            order_amount=float(amount),
-            order_currency="INR",
-            customer_details=customer,
-            order_meta=order_meta,
-            order_note=f"Bill payment - Rs {amount} at {merchant_name}"
-        )
-
-        # Step 1: Create Cashfree order (no S2S approval needed)
-        order_response = cashfree_client.PGCreateOrder(CASHFREE_API_VERSION, order_request)
-        order_data = order_response.data
-        payment_session_id = order_data.payment_session_id
-
-        # Step 2: Build Cashfree checkout URL and generate QR from it
-        # Customer scans QR → opens Cashfree checkout → pays via UPI → webhook fires automatically
-        if CASHFREE_ENVIRONMENT == 'production':
-            checkout_url = f"https://payments.cashfree.com/order/#/{payment_session_id}"
-        else:
-            checkout_url = f"https://sandbox.cashfree.com/pg/order/#/{payment_session_id}"
+        if not checkout_url:
+            raise RuntimeError(f"PhonePe create payment failed: {pay_response}")
 
         img_b64 = generate_url_qr(checkout_url)
 
@@ -264,8 +574,8 @@ def create_qr():
             'status': 'pending',
             'created_at': time.time(),
             'demo': False,
-            'cf_order_id': order_id,
-            'payment_session_id': payment_session_id
+            'gateway': 'phonepe',
+            'phonepe_order_id': order_id
         }
 
         log_audit_event(
@@ -273,7 +583,7 @@ def create_qr():
             action="QR_GENERATED",
             amount=float(amount),
             status="SUCCESS",
-            details={"qr_id": order_id, "gateway": "cashfree", "checkout_url": checkout_url}
+            details={"qr_id": order_id, "gateway": "phonepe", "checkout_url": checkout_url}
         )
 
         return jsonify({
@@ -292,13 +602,9 @@ def create_qr():
             action="QR_GENERATION_FAILED",
             amount=float(amount),
             status="ERROR",
-            details={"gateway": "cashfree", "error": str(e)}
+            details={"gateway": "phonepe", "error": str(e)}
         )
-        return jsonify({
-            'error': f'Failed to create payment QR. ({str(e)})'
-        }), 502
-
-
+        return jsonify({'error': f'Failed to create payment QR. ({str(e)})'}), 502
 @app.route('/api/simulate-payment', methods=['POST'])
 def simulate_payment():
     data = request.json
@@ -379,130 +685,186 @@ def simulate_payment():
     return jsonify({'success': True, 'result': result_copy})
 
 
-@app.route('/webhook', methods=['POST'])
-def cashfree_webhook():
-    """
-    Cashfree calls this URL when a payment is made.
-    This enables AUTOMATIC payment verification — no manual confirmation needed.
-    Configure in Cashfree Dashboard → Developers → Webhooks
-    """
+def apply_payment_result(session, paid_amount_rupees, upi_id, transaction_id):
+    paid_paise = int(float(paid_amount_rupees) * 100)
+    expected_paise = session['expected_amount']
+    merchant_id = session['merchant_id']
+    expected_rupees = float(expected_paise) / 100.0
+
+    now = time.time()
+    fraud_reasons = []
+
+    if upi_id in blocked_upi_ids:
+        fraud_reasons.append("Blocked UPI ID")
+
+    if paid_amount_rupees < 2.0 or paid_amount_rupees in [1.0, 0.5, 0.01]:
+        fraud_reasons.append("Unusual Attempt Value")
+
+    if upi_id not in upi_history:
+        upi_history[upi_id] = deque(maxlen=10)
+
+    while upi_history[upi_id] and now - upi_history[upi_id][0] > 120:
+        upi_history[upi_id].popleft()
+
+    if len(upi_history[upi_id]) >= 2:
+        fraud_reasons.append("High Frequency (Suspected Bot)")
+        blocked_upi_ids.add(upi_id)
+
+    upi_history[upi_id].append(now)
+
+    if paid_paise != expected_paise:
+        fraud_reasons.append(f"Amount Mismatch: Expected Rs {expected_rupees:.0f}, Got Rs {paid_amount_rupees:.0f}")
+
+    if not fraud_reasons:
+        result = {
+            'status': 'SUCCESS',
+            'paid': paid_amount_rupees,
+            'expected': expected_rupees,
+            'upi_id': upi_id,
+            'message': f"Rs {paid_amount_rupees:.0f} Received",
+            'transaction_id': transaction_id,
+            'timestamp': time.time()
+        }
+        session['status'] = 'paid'
+        log_audit_event(merchant_id, "PAYMENT_RECEIVED", paid_amount_rupees, upi_id, "SUCCESS")
+    else:
+        result = {
+            'status': 'MISMATCH',
+            'paid': paid_amount_rupees,
+            'expected': expected_rupees,
+            'upi_id': upi_id,
+            'message': f"FRAUD ALERT! {' | '.join(fraud_reasons)}",
+            'fraud_reasons': fraud_reasons,
+            'transaction_id': transaction_id,
+            'timestamp': time.time()
+        }
+        session['status'] = 'mismatch'
+        log_audit_event(merchant_id, "FRAUD_FLAGGED", paid_amount_rupees, upi_id, "SUSPICIOUS", {"reasons": fraud_reasons, "expected": expected_rupees})
+
+    if merchant_id not in transaction_history:
+        transaction_history[merchant_id] = []
+    transaction_history[merchant_id].append(result)
+
+    socketio.emit('payment_result', result, room=merchant_id)
+    return result
+
+
+@app.route('/api/check-payment/<qr_id>', methods=['GET'])
+def check_payment_status(qr_id):
+    session = qr_sessions.get(qr_id)
+    if not session:
+        return jsonify({'error': 'Session not found'}), 404
+
+    if session.get('demo'):
+        return jsonify({'success': True, 'status': session.get('status', 'pending')})
+
+    if session.get('status') in {'paid', 'mismatch'}:
+        return jsonify({'success': True, 'status': session.get('status')})
+
+    try:
+        token = get_phonepe_access_token()
+        response = phonepe_request(
+            method='GET',
+            path=f"/checkout/v2/order/{session.get('phonepe_order_id', qr_id)}/status",
+            token=token
+        )
+
+        state = (
+            response.get('state')
+            or response.get('status')
+            or response.get('orderStatus')
+            or response.get('data', {}).get('state')
+            or response.get('data', {}).get('status')
+            or response.get('data', {}).get('orderStatus')
+            or ''
+        )
+        state_upper = str(state).upper()
+
+        if state_upper in {'COMPLETED', 'SUCCESS', 'PAID'}:
+            data = response.get('data', response)
+            paid_amount_paise = (
+                data.get('amount')
+                or data.get('payableAmount')
+                or data.get('paymentDetails', {}).get('amount')
+                or session['expected_amount']
+            )
+            paid_amount_rupees = float(paid_amount_paise) / 100.0
+            transaction_id = str(
+                data.get('transactionId')
+                or data.get('paymentTransactionId')
+                or data.get('merchantTransactionId')
+                or session.get('phonepe_order_id', qr_id)
+            )
+            upi_id = (
+                data.get('upiId')
+                or data.get('payerVpa')
+                or data.get('paymentDetails', {}).get('upiId')
+                or f"payer_{transaction_id[-6:]}@upi"
+            )
+
+            apply_payment_result(session, paid_amount_rupees, upi_id, transaction_id)
+
+        return jsonify({'success': True, 'status': session.get('status', 'pending')})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e), 'status': session.get('status', 'pending')}), 502
+
+
+@app.route('/webhook/razorpay-mock', methods=['POST'])
+def razorpay_mock_webhook():
     raw_body = request.get_data(as_text=True)
-    signature = request.headers.get('x-webhook-signature', '')
-    timestamp = request.headers.get('x-webhook-timestamp', '')
+    signature = request.headers.get('X-Razorpay-Signature', '')
+    expected_signature = create_webhook_signature(raw_body)
 
-    if not CASHFREE_WEBHOOK_SECRET or CASHFREE_WEBHOOK_SECRET == 'your_webhook_secret':
-        return jsonify({'error': 'Webhook secret not configured'}), 500
+    if not hmac.compare_digest(signature, expected_signature):
+        return jsonify({'success': False, 'error': 'Invalid webhook signature'}), 400
 
-    # Verify signature
-    message = f"{timestamp}{raw_body}"
-    expected_sig = base64.b64encode(
-        hmac.new(
-            CASHFREE_WEBHOOK_SECRET.encode(),
-            message.encode(),
-            hashlib.sha256
-        ).digest()
-    ).decode()
+    data = json.loads(raw_body or "{}")
+    event_type = data.get('event', '')
+    payment_entity = data.get('payload', {}).get('payment', {}).get('entity', {})
+    order_entity = data.get('payload', {}).get('order', {}).get('entity', {})
 
-    if not hmac.compare_digest(expected_sig, signature):
-        return jsonify({'error': 'Invalid signature'}), 400
+    order_id = str(payment_entity.get('order_id') or order_entity.get('id') or '').strip()
+    if not order_id:
+        return jsonify({'success': False, 'error': 'order_id missing'}), 400
 
-    data = json.loads(raw_body)
-    event_type = data.get('type', '')
+    order = get_order_record(order_id)
+    if not order:
+        return jsonify({'success': False, 'error': 'Order not found'}), 404
 
-    # Idempotency
-    event_id = request.headers.get('x-idempotency-key',
-                f"evt_{hashlib.md5(raw_body.encode()).hexdigest()}")
-    if event_id in processed_events:
-        return jsonify({'status': 'ok', 'message': 'Duplicate event ignored'})
-    processed_events.add(event_id)
-
-    if event_type == 'PAYMENT_SUCCESS_WEBHOOK':
-        payment_data = data.get('data', {})
-        order_info = payment_data.get('order', {})
-        payment_info = payment_data.get('payment', {})
-
-        order_id = order_info.get('order_id', '')
-        paid_amount_rupees = float(payment_info.get('payment_amount', 0))
-        paid_paise = int(paid_amount_rupees * 100)
-        transaction_id = str(payment_info.get('cf_payment_id', ''))
-
-        payment_method = payment_info.get('payment_method', {})
-        upi_details = payment_method.get('upi', {})
-        upi_id = upi_details.get('upi_id', f"payer_{transaction_id[-6:]}@upi")
+    if event_type == 'payment.captured':
+        paid_amount_rupees = float(payment_entity.get('amount', 0)) / 100.0
+        upi_id = payment_entity.get('vpa', 'payer@upi')
+        transaction_id = payment_entity.get('id', f"pay_{int(time.time())}")
 
         session = qr_sessions.get(order_id)
         if not session:
-            return jsonify({'error': 'Session not found'}), 404
-
-        if session['status'] == 'paid':
-            return jsonify({'status': 'ok', 'message': 'Already processed'})
-
-        expected_paise = session['expected_amount']
-        merchant_id = session['merchant_id']
-        expected_rupees = float(expected_paise) / 100.0
-
-        # --- AI Fraud Detection Checks ---
-        now = time.time()
-        fraud_reasons = []
-
-        if upi_id in blocked_upi_ids:
-            fraud_reasons.append("Blocked UPI ID")
-
-        if paid_amount_rupees < 2.0 or paid_amount_rupees in [1.0, 0.5, 0.01]:
-            fraud_reasons.append("Unusual Attempt Value")
-
-        if upi_id not in upi_history:
-            upi_history[upi_id] = deque(maxlen=10)
-
-        while upi_history[upi_id] and now - upi_history[upi_id][0] > 120:
-            upi_history[upi_id].popleft()
-
-        if len(upi_history[upi_id]) >= 2:
-            fraud_reasons.append("High Frequency (Suspected Bot)")
-            blocked_upi_ids.add(upi_id)
-
-        upi_history[upi_id].append(now)
-
-        if paid_paise != expected_paise:
-            fraud_reasons.append(f"Amount Mismatch: Expected Rs {expected_rupees:.0f}, Got Rs {paid_amount_rupees:.0f}")
-
-        if not fraud_reasons:
-            result = {
-                'status': 'SUCCESS',
-                'paid': paid_amount_rupees,
-                'expected': expected_rupees,
-                'upi_id': upi_id,
-                'message': f"Rs {paid_amount_rupees:.0f} Received",
-                'transaction_id': transaction_id,
-                'timestamp': time.time()
+            session = {
+                'merchant_id': order['merchant_id'],
+                'merchant_name': order['merchant_name'],
+                'expected_amount': int(float(order['amount_expected']) * 100),
+                'expected_amount_rupees': float(order['amount_expected']),
+                'status': 'pending',
+                'created_at': order['created_at'],
+                'demo': True,
+                'mode': 'mock'
             }
-            session['status'] = 'paid'
-            log_audit_event(merchant_id, "PAYMENT_RECEIVED", paid_amount_rupees, upi_id, "SUCCESS")
-        else:
-            result = {
-                'status': 'MISMATCH',
-                'paid': paid_amount_rupees,
-                'expected': expected_rupees,
-                'upi_id': upi_id,
-                'message': f"FRAUD ALERT! {' | '.join(fraud_reasons)}",
-                'fraud_reasons': fraud_reasons,
-                'transaction_id': transaction_id,
-                'timestamp': time.time()
-            }
-            session['status'] = 'mismatch'
-            log_audit_event(merchant_id, "FRAUD_FLAGGED", paid_amount_rupees, upi_id, "SUSPICIOUS",
-                           {"reasons": fraud_reasons, "expected": expected_rupees})
+            qr_sessions[order_id] = session
 
-        if merchant_id not in transaction_history:
-            transaction_history[merchant_id] = []
-        transaction_history[merchant_id].append(result)
+        apply_payment_result(session, paid_amount_rupees, upi_id, transaction_id)
+        update_order_status(order_id, session.get('status', 'pending'))
+        return jsonify({'success': True, 'status': session.get('status', 'pending')})
 
-        # Push real-time to merchant screen — THIS IS THE AUTOMATIC VERIFICATION
-        socketio.emit('payment_result', result, room=merchant_id)
+    if event_type == 'payment.failed':
+        update_order_status(order_id, 'failed')
+        log_audit_event(order['merchant_id'], "PAYMENT_FAILED", 0.0, "", "ERROR", {"order_id": order_id})
+        return jsonify({'success': True, 'status': 'failed'})
 
-    return jsonify({'status': 'ok'})
+    return jsonify({'success': True, 'status': 'ignored', 'event': event_type})
 
 
+@app.route('/webhook', methods=['POST'])
+def webhook_stub():
+    return jsonify({'status': 'ok', 'message': 'Use /webhook/razorpay-mock for mock gateway events.'})
 @app.route('/api/session/<qr_id>', methods=['GET'])
 def get_session(qr_id):
     """Polling fallback if WebSocket drops"""
@@ -544,7 +906,7 @@ def get_audit_logs():
     query += " ORDER BY timestamp DESC LIMIT 100"
 
     try:
-        conn = sqlite3.connect('audit.db')
+        conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         c.execute(query, params)
@@ -685,4 +1047,6 @@ def on_join(data):
 
 if __name__ == '__main__':
     print(" * Starting server on http://127.0.0.1:5000")
-    socketio.run(app, debug=True, host='0.0.0.0', port=5000)
+    socketio.run(app, debug=True, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)
+
+
