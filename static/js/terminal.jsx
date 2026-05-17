@@ -124,8 +124,10 @@ function App() {
 
   const revenueCanvasRef = useRef(null);
   const hoursCanvasRef = useRef(null);
+  const donutCanvasRef = useRef(null);
   const revenueChartRef = useRef(null);
   const hoursChartRef = useRef(null);
+  const donutChartRef = useRef(null);
 
   const merchantAvatar = useMemo(() => {
     if (!merchantName) return "M";
@@ -282,10 +284,10 @@ function App() {
 
   useEffect(() => {
     if (!merchantId) return;
-    if (view === "analytics") {
+    if (view === "terminal" || view === "analytics") {
       loadAnalytics(merchantId);
     }
-    if (view === "audit") {
+    if (view === "terminal" || view === "audit") {
       loadAuditLogs(merchantId);
     }
   }, [view, merchantId]);
@@ -355,18 +357,21 @@ function App() {
   }, [result.open]);
 
   useEffect(() => {
-    if (view !== "analytics") {
+    if (view !== "analytics" && view !== "terminal") {
       return undefined;
     }
     if (!window.Chart) {
       return undefined;
     }
-    if (!revenueCanvasRef.current || !hoursCanvasRef.current) {
+    if (view === "analytics" && (!revenueCanvasRef.current || !hoursCanvasRef.current)) {
+      return undefined;
+    }
+    if (view === "terminal" && (!revenueCanvasRef.current || !donutCanvasRef.current)) {
       return undefined;
     }
 
     Chart.defaults.color = "#5f6978";
-    Chart.defaults.font.family = "'Manrope', sans-serif";
+    Chart.defaults.font.family = "'Inter', system-ui, sans-serif";
     Chart.defaults.plugins.tooltip.backgroundColor = "#ffffff";
     Chart.defaults.plugins.tooltip.titleColor = "#1d232e";
     Chart.defaults.plugins.tooltip.bodyColor = "#5f6978";
@@ -420,42 +425,81 @@ function App() {
       },
     });
 
-    const hourCtx = hoursCanvasRef.current.getContext("2d");
-    hoursChartRef.current = new Chart(hourCtx, {
-      type: "line",
-      data: {
-        labels: analytics.charts.hourly_distribution.labels,
-        datasets: [
-          {
-            label: "Transactions",
-            data: analytics.charts.hourly_distribution.data,
-            borderColor: "rgba(217, 95, 58, 1)",
-            backgroundColor: "rgba(217, 95, 58, 0.12)",
-            borderWidth: 2,
-            tension: 0.4,
-            fill: true,
-            pointRadius: 2.5,
-          },
-        ],
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false },
+    if (hoursCanvasRef.current) {
+      const hourCtx = hoursCanvasRef.current.getContext("2d");
+      const hourGradient = hourCtx.createLinearGradient(0, 0, 0, 160);
+      hourGradient.addColorStop(0, "rgba(168, 85, 247, 0.4)");
+      hourGradient.addColorStop(1, "rgba(168, 85, 247, 0)");
+
+      hoursChartRef.current = new Chart(hourCtx, {
+        type: "line",
+        data: {
+          labels: analytics.charts.hourly_distribution.labels,
+          datasets: [
+            {
+              label: "Transactions",
+              data: analytics.charts.hourly_distribution.data,
+              borderColor: "rgba(168, 85, 247, 1)",
+              backgroundColor: hourGradient,
+              borderWidth: 2,
+              tension: 0.4,
+              fill: true,
+              pointRadius: 2.5,
+              pointBackgroundColor: "rgba(168, 85, 247, 1)"
+            },
+          ],
         },
-        scales: {
-          y: {
-            beginAtZero: true,
-            ticks: { stepSize: 1 },
-            grid: { color: "#dbe3ef" },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
           },
-          x: {
-            grid: { display: false },
+          scales: {
+            y: {
+              beginAtZero: true,
+              ticks: { stepSize: 1 },
+              grid: { color: "#dbe3ef" },
+            },
+            x: {
+              grid: { display: false },
+            },
           },
         },
-      },
-    });
+      });
+    }
+
+    if (donutChartRef.current) {
+      donutChartRef.current.destroy();
+    }
+    if (donutCanvasRef.current) {
+      const donutCtx = donutCanvasRef.current.getContext("2d");
+      const successData = analytics.summary.success_rate || 0;
+      const fraudData = 100 - successData;
+
+      donutChartRef.current = new Chart(donutCtx, {
+        type: "doughnut",
+        data: {
+          labels: ["Success", "Suspicious"],
+          datasets: [
+            {
+              data: [successData, fraudData],
+              backgroundColor: ["rgba(22, 163, 74, 0.8)", "rgba(220, 38, 38, 0.8)"],
+              borderWidth: 0,
+              hoverOffset: 2,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          cutout: "75%",
+          plugins: {
+            legend: { display: false },
+          },
+        },
+      });
+    }
 
     return () => {
       if (revenueChartRef.current) {
@@ -463,6 +507,9 @@ function App() {
       }
       if (hoursChartRef.current) {
         hoursChartRef.current.destroy();
+      }
+      if (donutChartRef.current) {
+        donutChartRef.current.destroy();
       }
     };
   }, [view, analytics]);
@@ -623,80 +670,157 @@ function App() {
 
   return (
     <div className="app">
-      <header className="topbar">
-        <div className="brand">
-          <div className="brand-mark">U</div>
-          <div className="brand-block">
-            <div className="brand-name">UPI Guard Dashboard</div>
-            <div className="brand-sub">Standard</div>
-          </div>
-          <a className="back-link" href="/">Public Landing</a>
-        </div>
-
-        <div className="top-actions">
-          <input className="top-search" placeholder="Search payments, settings, logs..." />
-          <button className="icon-btn" aria-label="Notifications">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 3a5 5 0 0 0-5 5v2.6c0 .7-.2 1.4-.6 2L5 15v1h14v-1l-1.4-2.4c-.4-.6-.6-1.3-.6-2V8a5 5 0 0 0-5-5Zm0 18a2.5 2.5 0 0 0 2.4-2h-4.8A2.5 2.5 0 0 0 12 21Z" />
-            </svg>
-          </button>
-          <button className="icon-btn" aria-label="Broadcast">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M3 10v4h3l4 4V6L6 10H3Zm12.5 2a3.5 3.5 0 0 0-2.5-3.35v6.7A3.5 3.5 0 0 0 15.5 12Zm0-7a1 1 0 0 0-.7 1.7A7.5 7.5 0 0 1 17.5 12a7.5 7.5 0 0 1-2.7 5.3 1 1 0 0 0 1.4 1.4A9.5 9.5 0 0 0 19.5 12a9.5 9.5 0 0 0-3.3-7.1 1 1 0 0 0-.7-.3Z" />
-            </svg>
-          </button>
-          <div className="profile-chip">{merchantAvatar || "AT"}</div>
-          <div className="status-pill">
-            <span className={`dot ${connected ? "live" : ""}`} />
-            {connected ? "Connected" : "Offline"}
-          </div>
-        </div>
-      </header>
-
       <main className="page">
         <div className="dashboard-shell">
-          <aside className="side-nav">
-            <div className="side-group">
-              <div className="side-title">Main</div>
-              <button className={`side-link ${view === "terminal" ? "active" : ""}`} onClick={() => setView("terminal")}>Home</button>
-              <button className={`side-link ${view === "analytics" ? "active" : ""}`} onClick={() => setView("analytics")}>Transactions</button>
-              <button className={`side-link ${view === "audit" ? "active" : ""}`} onClick={() => setView("audit")}>Settlements</button>
+          <header className="topbar">
+            <div className="brand">
+              <div className="brand-mark">U</div>
+              <div className="brand-block">
+                <div className="brand-name">UPI Guard</div>
+              </div>
             </div>
-            <div className="side-group">
-              <div className="side-title">Payment Products</div>
-              <div className="side-text">Payment Links</div>
-              <div className="side-text">Payment Pages</div>
-              <div className="side-text">Razorpay.me Link</div>
-            </div>
-            <div className="side-group">
-              <div className="side-title">Customer Products</div>
-              <div className="side-text">Customers</div>
-              <div className="side-text">Offers</div>
-              <div className="side-text">Developers</div>
-            </div>
-          </aside>
 
-          <section className="dashboard-content">
+            <div className="top-nav">
+              <a className="back-link" href="/">Public Landing</a>
+              <input className="top-search" placeholder="Search payments, settings, logs..." />
+            </div>
+
+            <div className="top-actions">
+              <button className="icon-btn" aria-label="Notifications">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 3a5 5 0 0 0-5 5v2.6c0 .7-.2 1.4-.6 2L5 15v1h14v-1l-1.4-2.4c-.4-.6-.6-1.3-.6-2V8a5 5 0 0 0-5-5Zm0 18a2.5 2.5 0 0 0 2.4-2h-4.8A2.5 2.5 0 0 0 12 21Z" />
+                </svg>
+              </button>
+              <div className="profile-chip">{merchantAvatar || "AT"}</div>
+              <div className="status-pill">
+                <span className={`dot ${connected ? "live" : ""}`} />
+                {connected ? "Connected" : "Offline"}
+              </div>
+            </div>
+          </header>
+
+          <div className="shell-body">
+            <aside className="side-nav">
+              <div className="side-group">
+                <div className="side-title">Main</div>
+                <button className={`side-link ${view === "terminal" ? "active" : ""}`} onClick={() => setView("terminal")}>Home</button>
+                <button className={`side-link ${view === "analytics" ? "active" : ""}`} onClick={() => setView("analytics")}>Transactions</button>
+                <button className={`side-link ${view === "audit" ? "active" : ""}`} onClick={() => setView("audit")}>Settlements</button>
+              </div>
+              <div className="side-group">
+                <div className="side-title">Payment Products</div>
+                <div className="side-text">Payment Links</div>
+                <div className="side-text">Payment Pages</div>
+                <div className="side-text">Razorpay.me Link</div>
+              </div>
+              <div className="side-group">
+                <div className="side-title">Customer Products</div>
+                <div className="side-text">Customers</div>
+                <div className="side-text">Offers</div>
+                <div className="side-text">Developers</div>
+              </div>
+            </aside>
+
+            <section className="dashboard-content">
         {view === "terminal" && (
           <section className="terminal-grid">
-            <div className="col">
-              <div className="card">
-                <div className="card-head">
-                  <span>Merchant Details</span>
+            <div className="col charts-col">
+              <div className="metrics-row">
+                <div className="metric-box">
+                  <div className="metric-label">Total Transactions</div>
+                  <div className="metric-value">{analytics.summary.total_transactions}</div>
                 </div>
-                <div className="merchant">
-                  <div className="avatar">{merchantAvatar}</div>
-                  <div>
-                    <h3>
-                      {merchantName || "Merchant"}
-                      <span className="badge safe">Verified</span>
-                    </h3>
-                    <p>{merchantVpa}</p>
+                <div className="metric-box">
+                  <div className="metric-label">Success Rate</div>
+                  <div className="metric-value success">{analytics.summary.success_rate}%</div>
+                </div>
+                <div className="metric-box">
+                  <div className="metric-label">Fraud Prevented</div>
+                  <div className="metric-value danger">{analytics.summary.fraud_count}</div>
+                </div>
+              </div>
+
+              <div className="charts-row">
+                <div className="chart-card mini">
+                  <div className="chart-title">Revenue Trends</div>
+                  <div className="chart-holder-small">
+                    <canvas ref={revenueCanvasRef} />
+                  </div>
+                </div>
+                <div className="chart-card mini">
+                  <div className="chart-title">Success Overview</div>
+                  <div className="chart-holder-small">
+                    <canvas ref={donutCanvasRef} />
                   </div>
                 </div>
               </div>
 
-              <div className="card">
+              <div className="charts-row">
+                <div className="chart-card mini">
+                  <div className="chart-title">Market Trends</div>
+                  <div className="chart-holder-small">
+                    <canvas ref={hoursCanvasRef} />
+                  </div>
+                </div>
+                <div className="chart-card mini" style={{ display: 'flex', flexDirection: 'column' }}>
+                  <div className="chart-title">Audit Highlights</div>
+                  <div className="progress-list" style={{ flex: 1, justifyContent: 'center' }}>
+                    {(() => {
+                      const stats = { create: 0, success: 0, failed: 0, fraud: 0 };
+                      auditLogs.forEach(log => {
+                        const action = (log.action || "").toUpperCase();
+                        if (action.includes("CREATE")) stats.create++;
+                        else if (action.includes("SUCCESS")) stats.success++;
+                        else if (action.includes("FAIL") || action.includes("ERROR")) stats.failed++;
+                        else if (action.includes("FRAUD") || action.includes("RISK")) stats.fraud++;
+                      });
+                      const total = auditLogs.length || 1;
+                      return (
+                        <>
+                          <div className="progress-item">
+                            <div className="progress-label-row">
+                              <span>Payment Success</span>
+                              <span>{stats.success}</span>
+                            </div>
+                            <div className="progress-bar-bg">
+                              <div className="progress-bar-fill" style={{ width: `${Math.min(100, (stats.success/total)*100)}%`, background: "var(--green)" }} />
+                            </div>
+                          </div>
+                          <div className="progress-item">
+                            <div className="progress-label-row">
+                              <span>QR Generated</span>
+                              <span>{stats.create}</span>
+                            </div>
+                            <div className="progress-bar-bg">
+                              <div className="progress-bar-fill" style={{ width: `${Math.min(100, (stats.create/total)*100)}%`, background: "var(--accent)" }} />
+                            </div>
+                          </div>
+                          <div className="progress-item">
+                            <div className="progress-label-row">
+                              <span>Fraud Blocks</span>
+                              <span>{stats.fraud}</span>
+                            </div>
+                            <div className="progress-bar-bg">
+                              <div className="progress-bar-fill" style={{ width: `${Math.min(100, (stats.fraud/total)*100)}%`, background: "var(--red)" }} />
+                            </div>
+                          </div>
+                          <div className="progress-item">
+                            <div className="progress-label-row">
+                              <span>Errors/Fails</span>
+                              <span>{stats.failed}</span>
+                            </div>
+                            <div className="progress-bar-bg">
+                              <div className="progress-bar-fill" style={{ width: `${Math.min(100, (stats.failed/total)*100)}%`, background: "var(--yellow)" }} />
+                            </div>
+                          </div>
+                        </>
+                      );
+                    })()}
+                  </div>
+                </div>
+              </div>
+
+              <div className="card history-wrap">
                 <div className="card-head">
                   <span>Recent Transactions</span>
                   <button className="btn-ghost" style={{ width: "auto", marginTop: 0, padding: "7px 12px" }} onClick={() => loadHistory()}>Refresh</button>
@@ -1001,7 +1125,8 @@ function App() {
             </div>
           </section>
         )}
-          </section>
+            </section>
+          </div>
         </div>
       </main>
 
@@ -1015,49 +1140,33 @@ function App() {
             <div className="result-label">
               {result.status === STATUS.SUCCESS ? "Secure Transfer Complete" : "Fraud Alert Detected"}
             </div>
-
             {result.status !== STATUS.SUCCESS && result.fraud_reasons.length > 0 && (
               <div className="reasons">
                 {result.fraud_reasons.map((reason, idx) => (
-                  <div className="reason-item" key={`${reason}_${idx}`}>{reason}</div>
+                  <div className="reason-item" key={`reason_${idx}`}>{reason}</div>
                 ))}
               </div>
             )}
-
             <div className="result-detail">
               {result.status === STATUS.SUCCESS
                 ? `TXN: ${result.transaction_id || ""} | UPI: ${result.upi_id || "Unknown"}`
                 : `Expected Rs ${formatAmount(result.expected)} / Got Rs ${formatAmount(result.paid)} | UPI: ${result.upi_id || "Unknown"}`}
             </div>
-
             {result.status === STATUS.SUCCESS && (
               <a className="result-receipt" href={`/api/receipt/${currentQrId}?txn_id=${result.transaction_id || ""}`} target="_blank" rel="noreferrer">
                 Download PDF Receipt
               </a>
             )}
-
             <div className="result-count">Resetting in {resultCountdown}s...</div>
           </div>
         </div>
       )}
-
       {(!merchantId || !merchantName) && (
         <div className="modal">
           <div className="modal-card">
             <h2>Access Terminal</h2>
             <p>Enter your business name to create a secure merchant session.</p>
-            <input
-              className="modal-input"
-              value={loginName}
-              onChange={(e) => setLoginName(e.target.value)}
-              placeholder="Example: Sharma Kirana Store"
-              autoComplete="off"
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  onLogin();
-                }
-              }}
-            />
+            <input className="modal-input" value={loginName} onChange={(e) => setLoginName(e.target.value)} placeholder="Example: Sharma Kirana Store" autoComplete="off" onKeyDown={(e) => { if (e.key === "Enter") { onLogin(); }}} />
             <button className="modal-btn" onClick={onLogin}>Open Terminal</button>
           </div>
         </div>
