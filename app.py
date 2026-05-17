@@ -21,6 +21,10 @@ from collections import deque
 from flask import Flask, request, jsonify, render_template
 from flask_socketio import SocketIO, emit, join_room
 from dotenv import load_dotenv
+try:
+    import razorpay
+except Exception:
+    razorpay = None
 
 load_dotenv()
 
@@ -40,6 +44,9 @@ PHONEPE_ENVIRONMENT = os.getenv('PHONEPE_ENVIRONMENT', 'sandbox').strip().lower(
 MERCHANT_UPI_VPA = os.getenv('MERCHANT_UPI_VPA', '').strip()
 MOCK_WEBHOOK_SECRET = os.getenv('MOCK_WEBHOOK_SECRET', 'mock_webhook_secret').strip()
 DB_PATH = os.getenv('DB_PATH', os.path.join(tempfile.gettempdir(), 'upi_guard_audit.db')).strip()
+RAZORPAY_KEY_ID = os.getenv('RAZORPAY_KEY_ID', '').strip()
+RAZORPAY_KEY_SECRET = os.getenv('RAZORPAY_KEY_SECRET', '').strip()
+WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET', '').strip()
 
 # In-memory session store
 qr_sessions = {}
@@ -52,6 +59,14 @@ transaction_history = {}
 # ─────────────────────────────────────────────
 upi_history = {}
 blocked_upi_ids = set()
+
+
+def get_razorpay_client():
+    if razorpay is None:
+        raise RuntimeError("razorpay package not installed. Add razorpay to requirements.")
+    if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
+        raise RuntimeError("Razorpay keys are missing in .env")
+    return razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
 
 # ─────────────────────────────────────────────
 # DATABASE SETUP (AUDIT TRAIL)
@@ -524,13 +539,69 @@ def create_qr():
     if not amount or amount <= 0:
         return jsonify({'error': 'Invalid amount'}), 400
 
-    if mode not in {'live', 'demo'}:
-        return jsonify({'error': 'Invalid mode. Use live or demo.'}), 400
+    if mode not in {'live', 'demo', 'razorpay_test'}:
+        return jsonify({'error': 'Invalid mode. Use live, demo, or razorpay_test.'}), 400
 
     amount_paise = int(float(amount) * 100)
 
     if mode == 'demo':
         return create_demo_qr_response(amount, amount_paise, merchant_id, merchant_name)
+
+    if mode == 'razorpay_test':
+        try:
+            client = get_razorpay_client()
+            order = client.order.create({
+                "amount": amount_paise,
+                "currency": "INR",
+                "payment_capture": 1,
+                "notes": {
+                    "merchant_id": str(merchant_id),
+                    "merchant_name": str(merchant_name)
+                }
+            })
+            order_id = order["id"]
+
+            qr_sessions[order_id] = {
+                'merchant_id': merchant_id,
+                'merchant_name': merchant_name,
+                'expected_amount': amount_paise,
+                'expected_amount_rupees': float(amount),
+                'status': 'pending',
+                'created_at': time.time(),
+                'demo': False,
+                'gateway': 'razorpay',
+                'mode': 'razorpay_test',
+                'razorpay_order_id': order_id
+            }
+
+            log_audit_event(
+                merchant_id=merchant_id,
+                action="QR_GENERATED",
+                amount=float(amount),
+                status="SUCCESS",
+                details={"qr_id": order_id, "gateway": "razorpay_test", "order_id": order_id}
+            )
+
+            return jsonify({
+                'success': True,
+                'qr_id': order_id,
+                'amount': float(amount),
+                'expires_in': 300,
+                'demo_mode': False,
+                'mode': 'razorpay_test',
+                'gateway': 'razorpay',
+                'razorpay_order_id': order_id,
+                'razorpay_key': RAZORPAY_KEY_ID
+            })
+        except Exception as e:
+            log_audit_event(
+                merchant_id=merchant_id,
+                action="QR_GENERATION_FAILED",
+                amount=float(amount),
+                status="ERROR",
+                details={"gateway": "razorpay_test", "error": str(e)}
+            )
+            return jsonify({'error': f'Failed to create Razorpay test order. ({str(e)})'}), 502
 
     if not is_live_configured():
         return jsonify({'error': 'Live mode is not configured. Set PhonePe keys in .env or switch to Demo mode.'}), 400
@@ -761,6 +832,21 @@ def check_payment_status(qr_id):
     if session.get('status') in {'paid', 'mismatch'}:
         return jsonify({'success': True, 'status': session.get('status')})
 
+    if session.get('mode') == 'razorpay_test':
+        try:
+            client = get_razorpay_client()
+            payments = client.order.payments(qr_id)
+            items = payments.get('items', []) if isinstance(payments, dict) else []
+            captured = next((p for p in items if str(p.get('status', '')).lower() == 'captured'), None)
+            if captured:
+                paid_amount_rupees = float(captured.get('amount', 0)) / 100.0
+                upi_id = captured.get('vpa') or 'payer@upi'
+                transaction_id = captured.get('id', f"pay_{int(time.time())}")
+                apply_payment_result(session, paid_amount_rupees, upi_id, transaction_id)
+            return jsonify({'success': True, 'status': session.get('status', 'pending')})
+        except Exception as e:
+            return jsonify({'success': False, 'error': str(e), 'status': session.get('status', 'pending')}), 502
+
     try:
         token = get_phonepe_access_token()
         response = phonepe_request(
@@ -863,8 +949,52 @@ def razorpay_mock_webhook():
 
 
 @app.route('/webhook', methods=['POST'])
-def webhook_stub():
-    return jsonify({'status': 'ok', 'message': 'Use /webhook/razorpay-mock for mock gateway events.'})
+def webhook_live():
+    raw_body = request.get_data(as_text=True)
+    signature = request.headers.get('X-Razorpay-Signature', '')
+
+    if not WEBHOOK_SECRET:
+        return jsonify({'success': False, 'error': 'WEBHOOK_SECRET missing'}), 500
+
+    expected_signature = hmac.new(
+        WEBHOOK_SECRET.encode(),
+        raw_body.encode(),
+        hashlib.sha256
+    ).hexdigest()
+
+    if not hmac.compare_digest(signature, expected_signature):
+        return jsonify({'success': False, 'error': 'Invalid webhook signature'}), 400
+
+    data = json.loads(raw_body or "{}")
+    event_type = data.get('event', '')
+    payment_entity = data.get('payload', {}).get('payment', {}).get('entity', {})
+    order_id = str(payment_entity.get('order_id') or '').strip()
+
+    if event_type != 'payment.captured':
+        return jsonify({'success': True, 'status': 'ignored', 'event': event_type})
+
+    if not order_id:
+        return jsonify({'success': False, 'error': 'order_id missing'}), 400
+
+    session = qr_sessions.get(order_id)
+    if not session:
+        return jsonify({'success': False, 'error': 'Session not found'}), 404
+
+    paid_amount_rupees = float(payment_entity.get('amount', 0)) / 100.0
+    upi_id = payment_entity.get('vpa', 'payer@upi')
+    transaction_id = payment_entity.get('id', f"pay_{int(time.time())}")
+    apply_payment_result(session, paid_amount_rupees, upi_id, transaction_id)
+
+    log_audit_event(
+        merchant_id=session.get('merchant_id', 'default_merchant'),
+        action="WEBHOOK_PAYMENT_CAPTURED",
+        amount=paid_amount_rupees,
+        upi_id=upi_id,
+        status="SUCCESS",
+        details={"order_id": order_id, "transaction_id": transaction_id, "gateway": "razorpay"}
+    )
+
+    return jsonify({'success': True, 'status': session.get('status', 'pending')})
 @app.route('/api/session/<qr_id>', methods=['GET'])
 def get_session(qr_id):
     """Polling fallback if WebSocket drops"""

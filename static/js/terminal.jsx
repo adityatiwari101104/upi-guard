@@ -76,6 +76,8 @@ function App() {
   const [currentQrId, setCurrentQrId] = useState("");
   const [currentAmount, setCurrentAmount] = useState(0);
   const [qrImage, setQrImage] = useState("");
+  const [rzpOrderId, setRzpOrderId] = useState("");
+  const [rzpKey, setRzpKey] = useState("");
   const [isDemoMode, setIsDemoMode] = useState(false);
   const [currentFlowMode, setCurrentFlowMode] = useState("");
   const [demoUpiId, setDemoUpiId] = useState("demo@upi");
@@ -200,6 +202,8 @@ function App() {
     setCurrentQrId("");
     setCurrentAmount(0);
     setQrImage("");
+    setRzpOrderId("");
+    setRzpKey("");
     setIsDemoMode(false);
     setCurrentFlowMode("");
     setQrError("");
@@ -493,12 +497,32 @@ function App() {
         setCurrentQrId(data.qr_id);
         setCurrentAmount(amount);
         setQrImage(data.image_b64 || data.image_url || "");
+        setRzpOrderId(data.razorpay_order_id || "");
+        setRzpKey(data.razorpay_key || "");
         setIsDemoMode(Boolean(data.demo_mode));
         setCurrentFlowMode(data.mode || paymentMode);
         const expiry = Number(data.expires_in) || 300;
         setTimerTotal(expiry);
         setTimerRemaining(expiry);
         setScreen("qr");
+
+        if ((data.mode || paymentMode) === "razorpay_test" && window.Razorpay && data.razorpay_order_id && data.razorpay_key) {
+          const rzp = new window.Razorpay({
+            key: data.razorpay_key,
+            amount: Math.round(amount * 100),
+            currency: "INR",
+            name: "UPI Guard Demo",
+            description: "Razorpay Test Verification",
+            order_id: data.razorpay_order_id,
+            handler: function () {
+              // Backend polling/webhook will finalize status
+            },
+            modal: {
+              ondismiss: function () {},
+            },
+          });
+          rzp.open();
+        }
       } else {
         setQrError(data.error || "Unable to generate QR right now.");
       }
@@ -743,6 +767,12 @@ function App() {
                     >
                       Mock
                     </button>
+                    <button
+                      className={`view-btn ${paymentMode === "razorpay_test" ? "active" : ""}`}
+                      onClick={() => onModeChange("razorpay_test")}
+                    >
+                      RZP Test
+                    </button>
                   </div>
 
                   <div className="muted" style={{ marginBottom: 10 }}>
@@ -750,6 +780,8 @@ function App() {
                       ? "Live mode: gateway-driven verification."
                       : paymentMode === "demo"
                         ? "Demo mode allows instant local simulation."
+                        : paymentMode === "razorpay_test"
+                          ? "Razorpay test mode: real webhook flow in test environment."
                         : "Mock mode: real UPI deep-link QR + simulated gateway webhook."}
                   </div>
 
@@ -814,6 +846,27 @@ function App() {
                     <div className="muted" style={{ textAlign: "center", margin: "8px 0" }}>
                       Waiting for payment... verification is automatic.
                     </div>
+                  )}
+
+                  {currentFlowMode === "razorpay_test" && rzpOrderId && rzpKey && (
+                    <button
+                      className="btn-main"
+                      onClick={() => {
+                        if (!window.Razorpay) return;
+                        const rzp = new window.Razorpay({
+                          key: rzpKey,
+                          amount: Math.round(currentAmount * 100),
+                          currency: "INR",
+                          name: "UPI Guard Demo",
+                          description: "Razorpay Test Verification",
+                          order_id: rzpOrderId,
+                          handler: function () {},
+                        });
+                        rzp.open();
+                      }}
+                    >
+                      Open Razorpay Checkout
+                    </button>
                   )}
 
                   <button className="btn-ghost" onClick={resetFlow}>Cancel Transaction</button>
