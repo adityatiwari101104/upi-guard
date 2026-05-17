@@ -9,11 +9,13 @@ import hmac
 import hashlib
 import json
 import time
+import re
 import io
 import base64
 import sqlite3
 import tempfile
 import segno
+from datetime import datetime
 from urllib.parse import quote
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -41,7 +43,7 @@ PHONEPE_CLIENT_VERSION = os.getenv('PHONEPE_CLIENT_VERSION', '1').strip()
 PHONEPE_ENVIRONMENT = os.getenv('PHONEPE_ENVIRONMENT', 'sandbox').strip().lower()
 
 # Merchant UPI VPA fallback for direct QR mode
-MERCHANT_UPI_VPA = os.getenv('MERCHANT_UPI_VPA', '').strip()
+MERCHANT_UPI_VPA = os.getenv('MERCHANT_UPI_VPA', 'adityavictory124-1@oksbi').strip()
 MOCK_WEBHOOK_SECRET = os.getenv('MOCK_WEBHOOK_SECRET', 'mock_webhook_secret').strip()
 DB_PATH = os.getenv('DB_PATH', os.path.join(tempfile.gettempdir(), 'upi_guard_audit.db')).strip()
 RAZORPAY_KEY_ID = os.getenv('RAZORPAY_KEY_ID', '').strip()
@@ -50,6 +52,7 @@ WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET', '').strip()
 
 # In-memory session store
 qr_sessions = {}
+pending_payments = {}
 
 # In-memory transaction history store
 transaction_history = {}
@@ -286,13 +289,12 @@ def get_phonepe_access_token():
 
 def generate_upi_qr(upi_vpa, merchant_name, amount, txn_ref=""):
     """Generate a UPI QR code image as base64 PNG using segno."""
+    # Use minimal UPI URI for maximum app compatibility.
     upi_string = (
         f"upi://pay?pa={upi_vpa}"
         f"&pn={quote(merchant_name)}"
         f"&am={amount}"
         f"&cu=INR"
-        f"&tn=Bill+Payment+Ref+{txn_ref}"
-        f"&tr={txn_ref}"
     )
     qr_gen = segno.make(upi_string)
     buffer = io.BytesIO()
@@ -539,13 +541,58 @@ def create_qr():
     if not amount or amount <= 0:
         return jsonify({'error': 'Invalid amount'}), 400
 
-    if mode not in {'live', 'demo', 'razorpay_test'}:
-        return jsonify({'error': 'Invalid mode. Use live, demo, or razorpay_test.'}), 400
+    if mode not in {'live', 'demo', 'razorpay_test', 'upi_direct'}:
+        return jsonify({'error': 'Invalid mode. Use live, demo, razorpay_test, or upi_direct.'}), 400
 
     amount_paise = int(float(amount) * 100)
 
     if mode == 'demo':
         return create_demo_qr_response(amount, amount_paise, merchant_id, merchant_name)
+
+    if mode == 'upi_direct':
+        if not MERCHANT_UPI_VPA:
+            return jsonify({'error': 'MERCHANT_UPI_VPA is not configured in .env'}), 400
+
+        order_id = f"upi_direct_{int(time.time())}"
+        upi_uri, img_b64 = generate_upi_qr(
+            upi_vpa=MERCHANT_UPI_VPA,
+            merchant_name=merchant_name,
+            amount=f"{float(amount):.2f}",
+            txn_ref=order_id
+        )
+
+        qr_sessions[order_id] = {
+            'merchant_id': merchant_id,
+            'merchant_name': merchant_name,
+            'expected_amount': amount_paise,
+            'expected_amount_rupees': float(amount),
+            'status': 'pending',
+            'created_at': time.time(),
+            'demo': False,
+            'gateway': 'upi_direct',
+            'mode': 'upi_direct'
+        }
+
+        pending_payments["latest"] = {
+            "amount": float(amount),
+            "time": datetime.now().isoformat(),
+            "qr_id": order_id,
+            "merchant_id": merchant_id
+        }
+        print(f"\n[SMS MODE] New payment expected: Rs {float(amount):.2f} | QR: {order_id}\n")
+
+        return jsonify({
+            'success': True,
+            'qr_id': order_id,
+            'image_b64': f"data:image/png;base64,{img_b64}",
+            'qr_image': f"data:image/png;base64,{img_b64}",
+            'upi_string': upi_uri,
+            'amount': float(amount),
+            'expires_in': 300,
+            'demo_mode': False,
+            'mode': 'upi_direct',
+            'status': 'pending'
+        })
 
     if mode == 'razorpay_test':
         try:
@@ -676,6 +723,81 @@ def create_qr():
             details={"gateway": "phonepe", "error": str(e)}
         )
         return jsonify({'error': f'Failed to create payment QR. ({str(e)})'}), 502
+
+
+def parse_upi_amount(sms):
+    patterns = [
+        r'Rs\.?\s*(\d+(?:\.\d{1,2})?)\s*credited',
+        r'INR\s*(\d+(?:\.\d{1,2})?)\s*credited',
+        r'credited.*?Rs\.?\s*(\d+(?:\.\d{1,2})?)',
+        r'received\s+Rs\.?\s*(\d+(?:\.\d{1,2})?)',
+        r'Rs\.?\s*(\d+(?:\.\d{1,2})?)\s*received',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, sms, re.IGNORECASE)
+        if match:
+            return float(match.group(1))
+    return None
+
+
+def parse_upi_ref(sms):
+    patterns = [
+        r'UPI\s*[Rr]ef\s*[Nn]o\.?\s*(\d+)',
+        r'UPI[:/](\d+)',
+        r'ref\s*no\.?\s*(\d+)',
+        r'transaction\s*id[:\s]*([A-Za-z0-9]+)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, sms, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return "N/A"
+
+
+@app.route("/sms-webhook", methods=["POST"])
+def sms_webhook():
+    try:
+        data = request.json or {}
+        sms = (data.get("message") or data.get("body") or data.get("sms") or "").strip()
+        print(f"\n[SMS WEBHOOK] SMS RECEIVED: {sms}\n")
+
+        amount = parse_upi_amount(sms)
+        ref = parse_upi_ref(sms)
+
+        if amount is None:
+            print("[SMS WEBHOOK] Not a UPI credit SMS, ignoring.")
+            return jsonify({"status": "ignored"}), 200
+
+        expected_entry = pending_payments.get("latest", {})
+        expected = expected_entry.get("amount")
+
+        if expected is None:
+            print("[SMS WEBHOOK] No pending payment found.")
+            return jsonify({"status": "no_pending_payment"}), 200
+
+        qr_id = expected_entry.get("qr_id", "")
+        session = qr_sessions.get(qr_id)
+        if not session:
+            return jsonify({"status": "session_not_found"}), 404
+
+        print(f"[SMS WEBHOOK] Expected: Rs {expected:.2f} | Received: Rs {amount:.2f}")
+
+        # Reuse existing verification + fraud/mismatch pipeline
+        apply_payment_result(
+            session=session,
+            paid_amount_rupees=float(amount),
+            upi_id=f"sms_ref_{ref}",
+            transaction_id=str(ref)
+        )
+        pending_payments.pop("latest", None)
+
+        return jsonify({"status": "ok", "amount": amount, "transaction_ref": ref}), 200
+
+    except Exception as e:
+        print(f"[SMS WEBHOOK] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/api/simulate-payment', methods=['POST'])
 def simulate_payment():
     data = request.json
@@ -756,7 +878,7 @@ def simulate_payment():
     return jsonify({'success': True, 'result': result_copy})
 
 
-def apply_payment_result(session, paid_amount_rupees, upi_id, transaction_id):
+def apply_payment_result(session, paid_amount_rupees, upi_id, transaction_id, source="auto"):
     paid_paise = int(float(paid_amount_rupees) * 100)
     expected_paise = session['expected_amount']
     merchant_id = session['merchant_id']
@@ -765,23 +887,25 @@ def apply_payment_result(session, paid_amount_rupees, upi_id, transaction_id):
     now = time.time()
     fraud_reasons = []
 
-    if upi_id in blocked_upi_ids:
-        fraud_reasons.append("Blocked UPI ID")
+    # Manual confirm flow should validate amount match only.
+    if source != "manual_confirm":
+        if upi_id in blocked_upi_ids:
+            fraud_reasons.append("Blocked UPI ID")
 
-    if paid_amount_rupees < 2.0 or paid_amount_rupees in [1.0, 0.5, 0.01]:
-        fraud_reasons.append("Unusual Attempt Value")
+        if paid_amount_rupees < 2.0 or paid_amount_rupees in [1.0, 0.5, 0.01]:
+            fraud_reasons.append("Unusual Attempt Value")
 
-    if upi_id not in upi_history:
-        upi_history[upi_id] = deque(maxlen=10)
+        if upi_id not in upi_history:
+            upi_history[upi_id] = deque(maxlen=10)
 
-    while upi_history[upi_id] and now - upi_history[upi_id][0] > 120:
-        upi_history[upi_id].popleft()
+        while upi_history[upi_id] and now - upi_history[upi_id][0] > 120:
+            upi_history[upi_id].popleft()
 
-    if len(upi_history[upi_id]) >= 2:
-        fraud_reasons.append("High Frequency (Suspected Bot)")
-        blocked_upi_ids.add(upi_id)
+        if len(upi_history[upi_id]) >= 2:
+            fraud_reasons.append("High Frequency (Suspected Bot)")
+            blocked_upi_ids.add(upi_id)
 
-    upi_history[upi_id].append(now)
+        upi_history[upi_id].append(now)
 
     if paid_paise != expected_paise:
         fraud_reasons.append(f"Amount Mismatch: Expected Rs {expected_rupees:.0f}, Got Rs {paid_amount_rupees:.0f}")
@@ -1168,6 +1292,50 @@ def get_receipt(qr_id):
 # WEBSOCKET EVENTS
 # ─────────────────────────────────────────────
 
+@app.route('/merchant-confirm')
+def merchant_confirm():
+    return render_template('merchant_confirm.html')
+
+
+@app.route('/api/manual-verify', methods=['POST'])
+def manual_verify():
+    data = request.json or {}
+    amount = float(data.get('amount', 0))
+    ref = data.get('ref', 'MANUAL-REF')
+
+    expected_entry = pending_payments.get('latest', {})
+    expected = expected_entry.get('amount')
+    qr_id = expected_entry.get('qr_id', '')
+
+    if not expected:
+        return jsonify({'error': 'No pending payment found'}), 400
+
+    session = qr_sessions.get(qr_id)
+    if not session:
+        session = {
+            'merchant_id': 'default_merchant',
+            'merchant_name': 'Merchant',
+            'expected_amount': int(expected * 100),
+            'expected_amount_rupees': float(expected),
+            'status': 'pending',
+            'created_at': time.time(),
+            'demo': False,
+            'mode': 'upi_direct'
+        }
+        qr_sessions[qr_id] = session
+
+    result = apply_payment_result(
+        session=session,
+        paid_amount_rupees=amount,
+        upi_id=f"manual_ref_{ref}",
+        transaction_id=str(ref),
+        source="manual_confirm"
+    )
+
+    pending_payments.pop('latest', None)
+    return jsonify({'status': result.get('status'), 'message': result.get('message')})
+
+
 @socketio.on('join')
 def on_join(data):
     merchant_id = data.get('merchant_id', 'default_merchant')
@@ -1175,8 +1343,6 @@ def on_join(data):
     emit('joined', {'room': merchant_id})
 
 
-if __name__ == '__main__':
-    print(" * Starting server on http://127.0.0.1:5000")
-    socketio.run(app, debug=True, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)
-
-
+if __name__ == "__main__":
+    socketio.run(app, host="0.0.0.0", port=5000, debug=True, allow_unsafe_werkzeug=True)
+#                     ↑ must be 0.0.0.0

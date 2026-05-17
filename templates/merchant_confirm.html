@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>UPI Guard - Confirm Payment</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: Arial, sans-serif;
+            background: #0f172a;
+            color: white;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+
+        .card {
+            background: #1e293b;
+            border-radius: 16px;
+            padding: 32px 24px;
+            width: 100%;
+            max-width: 400px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+        }
+
+        .logo {
+            text-align: center;
+            font-size: 28px;
+            font-weight: bold;
+            color: #38bdf8;
+            margin-bottom: 8px;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #94a3b8;
+            font-size: 14px;
+            margin-bottom: 28px;
+        }
+
+        label {
+            display: block;
+            font-size: 13px;
+            color: #94a3b8;
+            margin-bottom: 6px;
+            margin-top: 16px;
+        }
+
+        input {
+            width: 100%;
+            padding: 14px;
+            font-size: 18px;
+            border-radius: 10px;
+            border: 1px solid #334155;
+            background: #0f172a;
+            color: white;
+            outline: none;
+        }
+
+        input:focus {
+            border-color: #38bdf8;
+        }
+
+        .btn-verify {
+            width: 100%;
+            padding: 18px;
+            margin-top: 24px;
+            background: #16a34a;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            letter-spacing: 0.5px;
+        }
+
+        .btn-verify:active {
+            background: #15803d;
+            transform: scale(0.98);
+        }
+
+        .btn-fraud {
+            width: 100%;
+            padding: 18px;
+            margin-top: 12px;
+            background: #dc2626;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        .btn-fraud:active {
+            background: #b91c1c;
+            transform: scale(0.98);
+        }
+
+        #result {
+            margin-top: 20px;
+            padding: 18px;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: bold;
+            text-align: center;
+            display: none;
+        }
+
+        .success { background: #14532d; border: 1px solid #16a34a; }
+        .fraud   { background: #7f1d1d; border: 1px solid #dc2626; }
+        .error   { background: #1e1b4b; border: 1px solid #6366f1; }
+
+        .divider {
+            border: none;
+            border-top: 1px solid #334155;
+            margin: 24px 0 8px;
+        }
+
+        .hint {
+            font-size: 12px;
+            color: #64748b;
+            text-align: center;
+            margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="logo">UPI Guard</div>
+        <div class="subtitle">Merchant Payment Confirmation Panel</div>
+
+        <label>Amount Received (Rs)</label>
+        <input
+            type="number"
+            id="amount"
+            placeholder="e.g. 250"
+            min="0"
+            step="0.01"
+        />
+
+        <label>UPI Ref / Transaction ID</label>
+        <input
+            type="text"
+            id="ref"
+            placeholder="e.g. 123456789012"
+        />
+
+        <button class="btn-verify" onclick="sendVerify('verify')">
+            Payment Received - VERIFY
+        </button>
+
+        <button class="btn-fraud" onclick="sendVerify('fraud')">
+            Wrong Amount - FLAG FRAUD
+        </button>
+
+        <div id="result"></div>
+
+        <hr class="divider">
+        <div class="hint">
+            Open PhonePe -> check notification -> enter amount and ref number above
+        </div>
+    </div>
+
+<script>
+async function sendVerify(type) {
+    const amountInput = document.getElementById('amount').value;
+    const ref = document.getElementById('ref').value || 'MANUAL-REF';
+    const resultEl = document.getElementById('result');
+
+    if (!amountInput) {
+        resultEl.className = 'error';
+        resultEl.innerText = 'Please enter the amount first';
+        resultEl.style.display = 'block';
+        return;
+    }
+
+    const amount = type === 'fraud' ? 0 : parseFloat(amountInput);
+
+    try {
+        resultEl.className = '';
+        resultEl.innerText = 'Sending to verification system...';
+        resultEl.style.display = 'block';
+
+        const res = await fetch('/api/manual-verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ amount, ref })
+        });
+
+        const data = await res.json();
+
+        if (data.status === 'SUCCESS') {
+            resultEl.className = 'success';
+            resultEl.innerText = 'VERIFIED - Merchant screen updated!';
+        } else if (data.status === 'MISMATCH') {
+            resultEl.className = 'fraud';
+            resultEl.innerText = 'FRAUD ALERT sent to merchant screen!';
+        } else {
+            resultEl.className = 'error';
+            resultEl.innerText = 'Error: ' + (data.error || 'Unknown error');
+        }
+
+    } catch(e) {
+        resultEl.className = 'error';
+        resultEl.innerText = 'Could not reach server. Check WiFi connection.';
+    }
+}
+</script>
+</body>
+</html>

@@ -81,7 +81,7 @@ function App() {
   const [isDemoMode, setIsDemoMode] = useState(false);
   const [currentFlowMode, setCurrentFlowMode] = useState("");
   const [demoUpiId, setDemoUpiId] = useState("demo@upi");
-  const [paymentMode, setPaymentMode] = useState(localStorage.getItem("upiguard_payment_mode") || "live");
+  const [paymentMode, setPaymentMode] = useState("upi_direct");
   const [qrError, setQrError] = useState("");
 
   const [timerRemaining, setTimerRemaining] = useState(0);
@@ -218,6 +218,12 @@ function App() {
     localStorage.setItem("upiguard_payment_mode", mode);
     setQrError("");
   }
+
+  useEffect(() => {
+    // Force default to UPI direct for real-payment demo flow.
+    localStorage.setItem("upiguard_payment_mode", "upi_direct");
+    setPaymentMode("upi_direct");
+  }, []);
 
   function handlePaymentResult(data) {
     setTimerRemaining(0);
@@ -750,6 +756,12 @@ function App() {
 
                   <div className="view-toggle" style={{ marginBottom: 12 }}>
                     <button
+                      className={`view-btn ${paymentMode === "upi_direct" ? "active" : ""}`}
+                      onClick={() => onModeChange("upi_direct")}
+                    >
+                      UPI Direct
+                    </button>
+                    <button
                       className={`view-btn ${paymentMode === "live" ? "active" : ""}`}
                       onClick={() => onModeChange("live")}
                     >
@@ -778,6 +790,8 @@ function App() {
                   <div className="muted" style={{ marginBottom: 10 }}>
                     {paymentMode === "live"
                       ? "Live mode: gateway-driven verification."
+                      : paymentMode === "upi_direct"
+                        ? "UPI Direct mode: real payment to your UPI ID via deep-link QR."
                       : paymentMode === "demo"
                         ? "Demo mode allows instant local simulation."
                         : paymentMode === "razorpay_test"
