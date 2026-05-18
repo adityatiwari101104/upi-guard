@@ -1,23 +1,23 @@
 /* ===== UPI Guard — Premium SaaS Dashboard (Target-matched) ===== */
 :root {
-  --bg-page: #dfe3ec;
-  --bg-shell: #f0f2f7;
-  --card-bg: #ffffff;
-  --card-border: #e2e5ea;
+  --bg-page: linear-gradient(-45deg, #a1c4fd, #c2e9fb, #e0c3fc, #8ec5fc);
+  --bg-shell: rgba(255, 255, 255, 0.4);
+  --card-bg: rgba(255, 255, 255, 0.55);
+  --card-border: rgba(255, 255, 255, 0.6);
   --card-radius: 18px;
   --card-pad: 22px;
   --ink: #111827;
-  --ink-soft: #6b7280;
-  --ink-muted: #9ca3af;
+  --ink-soft: #4b5563;
+  --ink-muted: #6b7280;
   --accent: #2563eb;
   --accent-hover: #1d4ed8;
   --green: #16a34a;
-  --green-bg: rgba(22,163,74,.1);
+  --green-bg: rgba(22,163,74,.15);
   --yellow: #ca8a04;
-  --yellow-bg: rgba(202,138,4,.1);
+  --yellow-bg: rgba(202,138,4,.15);
   --red: #dc2626;
-  --red-bg: rgba(220,38,38,.1);
-  --shadow-card: 0 1px 3px rgba(0,0,0,.04);
+  --red-bg: rgba(220,38,38,.15);
+  --shadow-card: 0 8px 32px rgba(31, 38, 135, 0.07);
   --shadow-lg: 0 12px 32px rgba(0,0,0,.08);
   --radius-pill: 999px;
   --font: 'Inter', system-ui, -apple-system, sans-serif;
@@ -30,7 +30,15 @@ body {
   font-family: var(--font);
   color: var(--ink);
   background: var(--bg-page);
+  background-size: 400% 400%;
+  animation: gradientBG 15s ease infinite;
   -webkit-font-smoothing: antialiased;
+}
+
+@keyframes gradientBG {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
 }
 
 /* ── App wrapper — vertically stacks topbar inside shell ── */
@@ -135,6 +143,8 @@ body {
   border-radius: 24px;
   border: 1px solid rgba(255,255,255,.6);
   box-shadow: 0 2px 20px rgba(0,0,0,.06), inset 0 1px 0 rgba(255,255,255,.5);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -199,6 +209,8 @@ body {
   background: var(--card-bg); border: 1px solid var(--card-border);
   border-radius: var(--card-radius); padding: 20px;
   box-shadow: var(--shadow-card); min-width: 0;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
 }
 .metric-label {
   font-size: 11px; font-weight: 700; color: var(--ink-muted);
@@ -230,6 +242,8 @@ body {
   border: 1px solid var(--card-border);
   border-radius: var(--card-radius);
   box-shadow: var(--shadow-card);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
 }
 
 .card { padding: var(--card-pad); }
