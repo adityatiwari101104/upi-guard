@@ -10,3 +10,9 @@ ml_models/*.pkl
 *.log
 .claude/
 app_test.*.log
+runtime.txt
+sanity_write.txt
+test_rzp.py
+static/css/landing.css
+templates/index.html
+audit.db.bak_*
