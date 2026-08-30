@@ -203,7 +203,7 @@ function App() {
   async function loadAuditLogs() {
     if (!token) return;
     try {
-      const query = new URLSearchParams({});
+      const query = new URLSearchParams({
         action: auditAction,
         status: auditStatus,
       });
