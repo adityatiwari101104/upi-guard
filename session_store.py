@@ -218,6 +218,10 @@ def create_store(redis_url=None):
     """
     raw_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     url = redis_url or raw_url
+    # Upstash requires SSL — convert redis:// to rediss://
+    if url and "upstash.io" in url and url.startswith("redis://"):
+        url = url.replace("redis://", "rediss://", 1)
+        print(f"[Redis] Converted to SSL (rediss://) for Upstash")
     print(f"[Redis] Raw URL: {url[:80]}")
     # Handle various Redis URL formats
     if url and not url.startswith(("redis://", "rediss://", "unix://")):
