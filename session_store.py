@@ -230,82 +230,26 @@ def create_store(redis_url=None):
         print(f"[Redis] Added rediss:// prefix: {url[:80]}")
     if not url:
         url = "redis://localhost:6379/0"
-    print(f"[Redis] Client configured for {url[:60]}... (lazy connect)")
-    try:
-        client = redis.from_url(
-            url,
-            decode_responses=False,
-            socket_connect_timeout=5,
-            socket_timeout=5,
-            retry_on_timeout=True,
-        )
-        client.ping()
-        print(f"[Redis] Connected successfully")
-    except Exception as e:
-        print(f"[Redis] WARNING: Redis unavailable ({e}), using in-memory fallback")
-        client = None
+    print(f"[Redis] Client configured for {url[:60]}...")
+    client = redis.from_url(
+        url,
+        decode_responses=False,
+        socket_connect_timeout=5,
+        socket_timeout=5,
+        retry_on_timeout=True,
+    )
+    client.ping()
+    print(f"[Redis] Connected successfully")
 
-    if client is None:
-        # In-memory fallback when Redis is unavailable
-        class MemDict:
-            def __init__(self): self._d = {}
-            def __getitem__(self, k): return self._d[k]
-            def __setitem__(self, k, v): self._d[k] = v
-            def __delitem__(self, k): del self._d[k]
-            def get(self, k, default=None): return self._d.get(k, default)
-            def pop(self, k, default=None): return self._d.pop(k, default)
-            def __contains__(self, k): return k in self._d
-            def __len__(self): return len(self._d)
-            def keys(self): return list(self._d.keys())
-            def values(self): return list(self._d.values())
-            def items(self): return list(self._d.items())
-            def clear(self): self._d.clear()
+    qr_sessions = RedisDict(client, "upiguard:qr_sessions")
+    pending_payments = RedisDict(client, "upiguard:pending_payments")
+    blocked_upi_ids = RedisSet(client, "upiguard:blocked_upis")
 
-        class MemList:
-            def __init__(self, max_len=200): self._l = []; self._max = max_len
-            def append(self, v): self._l.insert(0, v); self._l = self._l[:self._max]
-            def __iter__(self): return iter(reversed(self._l))
-            def __len__(self): return len(self._l)
-            def to_list(self): return list(reversed(self._l))
-            def clear(self): self._l.clear()
+    def transaction_history(mid):
+        return RedisList(client, f"upiguard:txn_history:{mid}", max_len=200)
 
-        class MemSet:
-            def __init__(self): self._s = set()
-            def add(self, v): self._s.add(v)
-            def __contains__(self, v): return v in self._s
-            def remove(self, v): self._s.discard(v)
-            def __len__(self): return len(self._s)
-            def members(self): return list(self._s)
-            def clear(self): self._s.clear()
-
-        class MemTimeWindow:
-            def __init__(self, ws=120): self._w = ws; self._ts = []
-            def add(self, t): self._ts.append(t); self._ts = [x for x in self._ts if t - x <= self._w]
-            def count_in_window(self, now=None):
-                if now is None: now = time.time()
-                return sum(1 for t in self._ts if now - t <= self._w)
-            def __len__(self): return len(self._ts)
-            def clear(self): self._ts.clear()
-
-        qr_sessions = MemDict()
-        pending_payments = MemDict()
-        blocked_upi_ids = MemSet()
-
-        def transaction_history(mid):
-            return MemList()
-
-        def upi_history(uid):
-            return MemTimeWindow()
-    else:
-        qr_sessions = RedisDict(client, "upiguard:qr_sessions")
-        pending_payments = RedisDict(client, "upiguard:pending_payments")
-        blocked_upi_ids = RedisSet(client, "upiguard:blocked_upis")
-
-        def transaction_history(mid):
-            return RedisList(client, f"upiguard:txn_history:{mid}", max_len=200)
-
-        def upi_history(uid):
-            return RedisTimeWindow(client, f"upiguard:upi_history:{uid}", window_seconds=120)
+    def upi_history(uid):
+        return RedisTimeWindow(client, f"upiguard:upi_history:{uid}", window_seconds=120)
 
     return {
         "client": client,
