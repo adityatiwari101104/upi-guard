@@ -727,23 +727,13 @@ function App() {
               </div>
             </div>
 
-            <div className="top-nav">
-              <a className="back-link" href="/">Public Landing</a>
-              <input className="top-search" placeholder="Search payments, settings, logs..." />
-            </div>
-
             <div className="top-actions">
-              <button className="icon-btn" aria-label="Notifications">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M12 3a5 5 0 0 0-5 5v2.6c0 .7-.2 1.4-.6 2L5 15v1h14v-1l-1.4-2.4c-.4-.6-.6-1.3-.6-2V8a5 5 0 0 0-5-5Zm0 18a2.5 2.5 0 0 0 2.4-2h-4.8A2.5 2.5 0 0 0 12 21Z" />
-                </svg>
-              </button>
               <div className="profile-chip" title={merchantName}>{merchantAvatar || "AT"}</div>
-              <button onClick={onLogout} style={{background: "none", border: "1px solid var(--card-border)", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 600, color: "var(--ink-soft)", cursor: "pointer"}}>Logout</button>
               <div className="status-pill">
                 <span className={`dot ${connected ? "live" : ""}`} />
                 {connected ? "Connected" : "Offline"}
               </div>
+              <button onClick={onLogout} style={{background: "none", border: "1px solid var(--card-border)", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 600, color: "var(--ink-soft)", cursor: "pointer"}}>Logout</button>
             </div>
           </header>
 
@@ -753,19 +743,7 @@ function App() {
                 <div className="side-title">Main</div>
                 <button className={`side-link ${view === "terminal" ? "active" : ""}`} onClick={() => setView("terminal")}>Home</button>
                 <button className={`side-link ${view === "analytics" ? "active" : ""}`} onClick={() => setView("analytics")}>Transactions</button>
-                <button className={`side-link ${view === "audit" ? "active" : ""}`} onClick={() => setView("audit")}>Settlements</button>
-              </div>
-              <div className="side-group">
-                <div className="side-title">Payment Products</div>
-                <div className="side-text">Payment Links</div>
-                <div className="side-text">Payment Pages</div>
-                <div className="side-text">Razorpay.me Link</div>
-              </div>
-              <div className="side-group">
-                <div className="side-title">Customer Products</div>
-                <div className="side-text">Customers</div>
-                <div className="side-text">Offers</div>
-                <div className="side-text">Developers</div>
+                <button className={`side-link ${view === "audit" ? "active" : ""}`} onClick={() => setView("audit")}>Audit Logs</button>
               </div>
             </aside>
 
