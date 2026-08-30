@@ -5,7 +5,8 @@ __pycache__/
 .DS_Store
 *.db
 *.db-journal
+*.db-bak*
 ml_models/*.pkl
 *.log
-app_test.err.log
-app_test.out.log
+.claude/
+app_test.*.log
