@@ -914,52 +914,11 @@ function App() {
                 <div className="card">
                   <div className="card-head">
                     <span>Bill Amount</span>
-                    <span>...</span>
-                  </div>
-
-                  <div className="view-toggle" style={{ marginBottom: 12 }}>
-                    <button
-                      className={`view-btn ${paymentMode === "upi_direct" ? "active" : ""}`}
-                      onClick={() => onModeChange("upi_direct")}
-                    >
-                      UPI Direct
-                    </button>
-                    <button
-                      className={`view-btn ${paymentMode === "live" ? "active" : ""}`}
-                      onClick={() => onModeChange("live")}
-                    >
-                      Live
-                    </button>
-                    <button
-                      className={`view-btn ${paymentMode === "demo" ? "active" : ""}`}
-                      onClick={() => onModeChange("demo")}
-                    >
-                      Demo
-                    </button>
-                    <button
-                      className={`view-btn ${paymentMode === "mock" ? "active" : ""}`}
-                      onClick={() => onModeChange("mock")}
-                    >
-                      Mock
-                    </button>
-                    <button
-                      className={`view-btn ${paymentMode === "razorpay_test" ? "active" : ""}`}
-                      onClick={() => onModeChange("razorpay_test")}
-                    >
-                      RZP Test
-                    </button>
+                    <span>UPI Direct</span>
                   </div>
 
                   <div className="muted" style={{ marginBottom: 10 }}>
-                    {paymentMode === "live"
-                      ? "Live mode: gateway-driven verification."
-                      : paymentMode === "upi_direct"
-                        ? "UPI Direct mode: real payment to your UPI ID via deep-link QR."
-                      : paymentMode === "demo"
-                        ? "Demo mode allows instant local simulation."
-                        : paymentMode === "razorpay_test"
-                          ? "Razorpay test mode: real webhook flow in test environment."
-                        : "Mock mode: real UPI deep-link QR + simulated gateway webhook."}
+                    Real payment to your UPI ID via deep-link QR.
                   </div>
 
                   {qrError && <div className="small-danger" style={{ marginBottom: 10 }}>{qrError}</div>}
