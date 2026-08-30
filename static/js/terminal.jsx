@@ -59,9 +59,9 @@ function playSound(type) {
 }
 
 function App() {
-  const [token, setToken] = useState(localStorage.getItem("upiguard_token") || "");
-  const [merchantId, setMerchantId] = useState(localStorage.getItem("upiguard_merchant_id") || "");
-  const [merchantName, setMerchantName] = useState(localStorage.getItem("upiguard_merchant_name") || "");
+  const [token, setToken] = useState("");
+  const [merchantId, setMerchantId] = useState("");
+  const [merchantName, setMerchantName] = useState("");
   const [authMode, setAuthMode] = useState("login");
   const [authName, setAuthName] = useState("");
   const [authEmail, setAuthEmail] = useState("");
