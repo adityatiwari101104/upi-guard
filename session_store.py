@@ -217,6 +217,13 @@ def create_store(redis_url=None):
     transaction_history_fn, upi_history_fn, blocked_upi_ids.
     """
     url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    # Handle various Redis URL formats
+    if url and not url.startswith(("redis://", "rediss://", "unix://")):
+        if "upstash.io" in url or ":6379" in url:
+            url = f"rediss://{url}" if "upstash.io" in url else f"redis://{url}"
+        else:
+            url = f"redis://{url}"
+    print(f"[Redis] Client configured for {url[:60]}... (lazy connect)")
     client = redis.from_url(
         url,
         decode_responses=False,
@@ -224,7 +231,6 @@ def create_store(redis_url=None):
         socket_timeout=5,
         retry_on_timeout=True,
     )
-    print(f"[Redis] Client configured for {url} (lazy connect)")
 
     qr_sessions = RedisDict(client, "upiguard:qr_sessions")
     pending_payments = RedisDict(client, "upiguard:pending_payments")

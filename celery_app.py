@@ -12,6 +12,12 @@ from celery import Celery
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+# Handle various Redis URL formats
+if REDIS_URL and not REDIS_URL.startswith(("redis://", "rediss://", "unix://")):
+    if "upstash.io" in REDIS_URL or ":6379" in REDIS_URL:
+        REDIS_URL = f"rediss://{REDIS_URL}" if "upstash.io" in REDIS_URL else f"redis://{REDIS_URL}"
+    else:
+        REDIS_URL = f"redis://{REDIS_URL}"
 
 celery = Celery(
     "upiguard",
