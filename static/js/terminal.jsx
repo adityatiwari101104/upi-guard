@@ -21,10 +21,6 @@ function formatClock(totalSeconds) {
   return `${minPart}:${secPart}`;
 }
 
-function generateMerchantId() {
-  return `merchant_${Math.random().toString(36).slice(2, 10)}`;
-}
-
 function playSound(type) {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -63,9 +59,15 @@ function playSound(type) {
 }
 
 function App() {
+  const [token, setToken] = useState(localStorage.getItem("upiguard_token") || "");
   const [merchantId, setMerchantId] = useState(localStorage.getItem("upiguard_merchant_id") || "");
   const [merchantName, setMerchantName] = useState(localStorage.getItem("upiguard_merchant_name") || "");
-  const [loginName, setLoginName] = useState("");
+  const [authMode, setAuthMode] = useState("login");
+  const [authName, setAuthName] = useState("");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
 
   const [view, setView] = useState("terminal");
   const [connected, setConnected] = useState(false);
@@ -113,6 +115,8 @@ function App() {
     upi_id: "",
     transaction_id: "",
     fraud_reasons: [],
+    risk_score: 0,
+    ml_verdict: "",
   });
   const [resultCountdown, setResultCountdown] = useState(6);
 
@@ -148,12 +152,31 @@ function App() {
     viewRef.current = view;
   }, [view]);
 
-  async function loadHistory(idArg) {
-    const id = idArg || merchantIdRef.current;
-    if (!id) return;
+  function authFetch(url, options = {}) {
+    const headers = { ...options.headers };
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+    if (options.body && typeof options.body === "string" && !headers["Content-Type"]) {
+      headers["Content-Type"] = "application/json";
+    }
+    return fetch(url, { ...options, headers }).then((res) => {
+      if (res.status === 401) {
+        setToken("");
+        setMerchantId("");
+        setMerchantName("");
+        localStorage.removeItem("upiguard_token");
+        localStorage.removeItem("upiguard_merchant_id");
+        localStorage.removeItem("upiguard_merchant_name");
+      }
+      return res;
+    });
+  }
 
+  async function loadHistory() {
+    if (!token) return;
     try {
-      const res = await fetch(`/api/history?merchant_id=${encodeURIComponent(id)}`);
+      const res = await authFetch("/api/history");
       const data = await res.json();
       if (data.success) {
         setHistory(Array.isArray(data.history) ? data.history : []);
@@ -163,12 +186,10 @@ function App() {
     }
   }
 
-  async function loadAnalytics(idArg) {
-    const id = idArg || merchantIdRef.current;
-    if (!id) return;
-
+  async function loadAnalytics() {
+    if (!token) return;
     try {
-      const res = await fetch(`/api/analytics?merchant_id=${encodeURIComponent(id)}`);
+      const res = await authFetch("/api/analytics");
       const data = await res.json();
       if (data.success) {
         setAnalytics(data);
@@ -178,17 +199,14 @@ function App() {
     }
   }
 
-  async function loadAuditLogs(idArg) {
-    const id = idArg || merchantIdRef.current;
-    if (!id) return;
-
+  async function loadAuditLogs() {
+    if (!token) return;
     try {
-      const query = new URLSearchParams({
-        merchant_id: id,
+      const query = new URLSearchParams({});
         action: auditAction,
         status: auditStatus,
       });
-      const res = await fetch(`/api/audit-logs?${query.toString()}`);
+      const res = await authFetch(`/api/audit-logs?${query.toString()}`);
       const data = await res.json();
       if (data.success) {
         setAuditLogs(Array.isArray(data.logs) ? data.logs : []);
@@ -237,6 +255,8 @@ function App() {
       upi_id: data.upi_id || "Unknown",
       transaction_id: data.transaction_id || "",
       fraud_reasons: data.fraud_reasons || [],
+      risk_score: data.risk_score || 0,
+      ml_verdict: data.ml_verdict || "",
     });
 
     playSound(data.status === STATUS.SUCCESS ? "success" : "fraud");
@@ -252,8 +272,8 @@ function App() {
 
     socket.on("connect", () => {
       setConnected(true);
-      if (merchantIdRef.current) {
-        socket.emit("join", { merchant_id: merchantIdRef.current });
+      if (token) {
+        socket.emit("join", { token });
       }
     });
 
@@ -271,24 +291,24 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (connected && merchantId && socketRef.current) {
-      socketRef.current.emit("join", { merchant_id: merchantId });
+    if (connected && token && socketRef.current) {
+      socketRef.current.emit("join", { token });
     }
-  }, [connected, merchantId]);
+  }, [connected, token]);
 
   useEffect(() => {
-    if (merchantId) {
-      loadHistory(merchantId);
+    if (token) {
+      loadHistory();
     }
-  }, [merchantId]);
+  }, [token]);
 
   useEffect(() => {
-    if (!merchantId) return;
+    if (!token) return;
     if (view === "terminal" || view === "analytics") {
-      loadAnalytics(merchantId);
+      loadAnalytics();
     }
     if (view === "terminal" || view === "audit") {
-      loadAuditLogs(merchantId);
+      loadAuditLogs();
     }
   }, [view, merchantId]);
 
@@ -317,7 +337,7 @@ function App() {
 
     const poller = setInterval(async () => {
       try {
-        await fetch(`/api/check-payment/${encodeURIComponent(currentQrId)}`);
+        await authFetch(`/api/check-payment/${encodeURIComponent(currentQrId)}`);
       } catch (err) {
         console.warn("Payment status poll failed", err);
       }
@@ -516,7 +536,7 @@ function App() {
 
   async function onGenerateQr() {
     const amount = parseFloat(amountStr);
-    if (!amount || amount <= 0 || !merchantId || !merchantName) {
+    if (!amount || amount <= 0 || !token) {
       return;
     }
 
@@ -527,21 +547,11 @@ function App() {
       const endpoint = paymentMode === "mock" ? "/api/orders" : "/api/create-qr";
       const payload =
         paymentMode === "mock"
-          ? {
-              amount,
-              merchant_id: merchantId,
-              merchant_name: merchantName,
-            }
-          : {
-              amount,
-              merchant_id: merchantId,
-              merchant_name: merchantName,
-              mode: paymentMode,
-            };
+          ? { amount }
+          : { amount, mode: paymentMode };
 
-      const res = await fetch(endpoint, {
+      const res = await authFetch(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
 
@@ -607,9 +617,8 @@ function App() {
               upi_id: demoUpiId || "demo@upi",
             };
 
-      const res = await fetch(endpoint, {
+      const res = await authFetch(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
       const data = await res.json();
@@ -649,19 +658,55 @@ function App() {
     });
   }
 
-  function onLogin() {
-    const cleanName = loginName.trim();
-    if (!cleanName) {
-      return;
+  async function onAuthSubmit() {
+    setAuthError("");
+    setAuthLoading(true);
+    try {
+      const endpoint = authMode === "register" ? "/api/auth/register" : "/api/auth/login";
+      const body = authMode === "register"
+        ? { name: authName, email: authEmail, password: authPassword }
+        : { email: authEmail, password: authPassword };
+
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+
+      if (!res.ok || !data.success) {
+        setAuthError(data.error || "Authentication failed");
+        return;
+      }
+
+      localStorage.setItem("upiguard_token", data.token);
+      localStorage.setItem("upiguard_merchant_id", data.merchant_id);
+      localStorage.setItem("upiguard_merchant_name", data.merchant_name);
+
+      setToken(data.token);
+      setMerchantId(data.merchant_id);
+      setMerchantName(data.merchant_name);
+      setAuthName("");
+      setAuthEmail("");
+      setAuthPassword("");
+    } catch (err) {
+      setAuthError("Could not reach server");
+    } finally {
+      setAuthLoading(false);
     }
+  }
 
-    const newId = generateMerchantId();
-    localStorage.setItem("upiguard_merchant_id", newId);
-    localStorage.setItem("upiguard_merchant_name", cleanName);
-
-    setMerchantId(newId);
-    setMerchantName(cleanName);
-    setLoginName("");
+  function onLogout() {
+    localStorage.removeItem("upiguard_token");
+    localStorage.removeItem("upiguard_merchant_id");
+    localStorage.removeItem("upiguard_merchant_name");
+    setToken("");
+    setMerchantId("");
+    setMerchantName("");
+    if (socketRef.current) {
+      socketRef.current.disconnect();
+      socketRef.current.connect();
+    }
   }
 
   const parsedAmount = Number.parseFloat(amountStr);
@@ -691,7 +736,8 @@ function App() {
                   <path d="M12 3a5 5 0 0 0-5 5v2.6c0 .7-.2 1.4-.6 2L5 15v1h14v-1l-1.4-2.4c-.4-.6-.6-1.3-.6-2V8a5 5 0 0 0-5-5Zm0 18a2.5 2.5 0 0 0 2.4-2h-4.8A2.5 2.5 0 0 0 12 21Z" />
                 </svg>
               </button>
-              <div className="profile-chip">{merchantAvatar || "AT"}</div>
+              <div className="profile-chip" title={merchantName}>{merchantAvatar || "AT"}</div>
+              <button onClick={onLogout} style={{background: "none", border: "1px solid var(--card-border)", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 600, color: "var(--ink-soft)", cursor: "pointer"}}>Logout</button>
               <div className="status-pill">
                 <span className={`dot ${connected ? "live" : ""}`} />
                 {connected ? "Connected" : "Offline"}
@@ -861,6 +907,19 @@ function App() {
                           <span className={`badge ${isSuccess ? "safe" : "danger"}`}>
                             {isSuccess ? "Safe" : "Suspicious"}
                           </span>
+                          {txn.risk_score > 0 && (
+                            <span style={{
+                              fontSize: "10px",
+                              fontWeight: "700",
+                              padding: "2px 6px",
+                              borderRadius: "999px",
+                              marginLeft: "4px",
+                              background: txn.risk_score >= 70 ? "rgba(220,38,38,0.1)" : txn.risk_score >= 40 ? "rgba(202,138,4,0.1)" : "rgba(22,163,74,0.1)",
+                              color: txn.risk_score >= 70 ? "#dc2626" : txn.risk_score >= 40 ? "#ca8a04" : "#16a34a",
+                            }}>
+                              ML: {txn.risk_score}
+                            </span>
+                          )}
                           {!isSuccess && shortReason && <div className="small-danger">{shortReason}</div>}
                         </div>
                       </div>
@@ -1140,6 +1199,25 @@ function App() {
             <div className="result-label">
               {result.status === STATUS.SUCCESS ? "Secure Transfer Complete" : "Fraud Alert Detected"}
             </div>
+            {result.risk_score > 0 && (
+              <div style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                margin: "8px 0",
+                padding: "4px 12px",
+                borderRadius: "999px",
+                fontSize: "12px",
+                fontWeight: "700",
+                background: result.risk_score >= 70 ? "rgba(220,38,38,0.12)" : result.risk_score >= 40 ? "rgba(202,138,4,0.12)" : "rgba(22,163,74,0.12)",
+                color: result.risk_score >= 70 ? "#dc2626" : result.risk_score >= 40 ? "#ca8a04" : "#16a34a",
+                border: `1px solid ${result.risk_score >= 70 ? "rgba(220,38,38,0.25)" : result.risk_score >= 40 ? "rgba(202,138,4,0.25)" : "rgba(22,163,74,0.25)"}`,
+              }}>
+                <span>ML Risk Score: {result.risk_score}/100</span>
+                <span style={{ opacity: 0.7 }}>|</span>
+                <span>{result.ml_verdict?.toUpperCase()}</span>
+              </div>
+            )}
             {result.status !== STATUS.SUCCESS && result.fraud_reasons.length > 0 && (
               <div className="reasons">
                 {result.fraud_reasons.map((reason, idx) => (
@@ -1161,13 +1239,25 @@ function App() {
           </div>
         </div>
       )}
-      {(!merchantId || !merchantName) && (
+      {(!token) && (
         <div className="modal">
           <div className="modal-card">
-            <h2>Access Terminal</h2>
-            <p>Enter your business name to create a secure merchant session.</p>
-            <input className="modal-input" value={loginName} onChange={(e) => setLoginName(e.target.value)} placeholder="Example: Sharma Kirana Store" autoComplete="off" onKeyDown={(e) => { if (e.key === "Enter") { onLogin(); }}} />
-            <button className="modal-btn" onClick={onLogin}>Open Terminal</button>
+            <h2>{authMode === "register" ? "Create Account" : "Welcome Back"}</h2>
+            <p>{authMode === "register" ? "Register to start accepting payments." : "Login to your merchant account."}</p>
+            {authMode === "register" && (
+              <input className="modal-input" value={authName} onChange={(e) => setAuthName(e.target.value)} placeholder="Business Name" autoComplete="off" style={{marginBottom: 10}} />
+            )}
+            <input className="modal-input" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} placeholder="Email" type="email" autoComplete="off" style={{marginBottom: 10}} />
+            <input className="modal-input" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} placeholder="Password (min 6 chars)" type="password" autoComplete="off" onKeyDown={(e) => { if (e.key === "Enter") onAuthSubmit(); }} />
+            {authError && <div style={{color: "#dc2626", fontSize: 13, marginTop: 8, textAlign: "center"}}>{authError}</div>}
+            <button className="modal-btn" onClick={onAuthSubmit} disabled={authLoading} style={{marginTop: 14}}>
+              {authLoading ? "Please wait..." : authMode === "register" ? "Register" : "Login"}
+            </button>
+            <div style={{textAlign: "center", marginTop: 12}}>
+              <button onClick={() => { setAuthMode(authMode === "register" ? "login" : "register"); setAuthError(""); }} style={{background: "none", border: "none", color: "#3b82f6", cursor: "pointer", fontSize: 13, fontWeight: 600}}>
+                {authMode === "register" ? "Already have an account? Login" : "New here? Register"}
+              </button>
+            </div>
           </div>
         </div>
       )}

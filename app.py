@@ -12,21 +12,39 @@ import time
 import re
 import io
 import base64
-import sqlite3
-import tempfile
 import segno
 from datetime import datetime
 from urllib.parse import quote
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
-from collections import deque
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, g
 from flask_socketio import SocketIO, emit, join_room
 from dotenv import load_dotenv
 try:
     import razorpay
 except Exception:
     razorpay = None
+
+from fraud_detector import FraudDetector
+from auth import (
+    hash_password, check_password, generate_token, generate_api_key,
+    generate_merchant_id, require_auth, require_api_key,
+)
+from db import (
+    init_db as pg_init_db,
+    create_order_record,
+    get_order_record,
+    update_order_status,
+    create_payment_record,
+    get_latest_payment_for_order,
+    log_webhook_event,
+    log_audit_event,
+    create_merchant,
+    get_merchant_by_email,
+    get_merchant_by_id,
+    update_merchant_api_key,
+)
+from session_store import create_store
 
 load_dotenv()
 
@@ -45,23 +63,20 @@ PHONEPE_ENVIRONMENT = os.getenv('PHONEPE_ENVIRONMENT', 'sandbox').strip().lower(
 # Merchant UPI VPA fallback for direct QR mode
 MERCHANT_UPI_VPA = os.getenv('MERCHANT_UPI_VPA', 'adityavictory124-1@oksbi').strip()
 MOCK_WEBHOOK_SECRET = os.getenv('MOCK_WEBHOOK_SECRET', 'mock_webhook_secret').strip()
-DB_PATH = os.getenv('DB_PATH', os.path.join(tempfile.gettempdir(), 'upi_guard_audit.db')).strip()
 RAZORPAY_KEY_ID = os.getenv('RAZORPAY_KEY_ID', '').strip()
 RAZORPAY_KEY_SECRET = os.getenv('RAZORPAY_KEY_SECRET', '').strip()
 WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET', '').strip()
 
-# In-memory session store
-qr_sessions = {}
-pending_payments = {}
-
-# In-memory transaction history store
-transaction_history = {}
-
 # ─────────────────────────────────────────────
-# FRAUD DETECTION STATE
+# DATABASE & SESSION STORE INIT
 # ─────────────────────────────────────────────
-upi_history = {}
-blocked_upi_ids = set()
+pg_init_db()
+_store = create_store()
+qr_sessions = _store["qr_sessions"]
+pending_payments = _store["pending_payments"]
+transaction_history = _store["transaction_history"]
+upi_history = _store["upi_history"]
+blocked_upi_ids = _store["blocked_upi_ids"]
 
 
 def get_razorpay_client():
@@ -71,123 +86,8 @@ def get_razorpay_client():
         raise RuntimeError("Razorpay keys are missing in .env")
     return razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
 
-# ─────────────────────────────────────────────
-# DATABASE SETUP (AUDIT TRAIL)
-# ─────────────────────────────────────────────
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS audit_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp REAL,
-            merchant_id TEXT,
-            action TEXT,
-            amount REAL,
-            upi_id TEXT,
-            status TEXT,
-            details TEXT
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS orders (
-            order_id TEXT PRIMARY KEY,
-            merchant_id TEXT NOT NULL,
-            merchant_name TEXT NOT NULL,
-            amount_expected REAL NOT NULL,
-            upi_uri TEXT NOT NULL,
-            status TEXT NOT NULL,
-            created_at REAL NOT NULL,
-            expires_at REAL NOT NULL
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS payments (
-            payment_id TEXT PRIMARY KEY,
-            order_id TEXT NOT NULL,
-            amount_paid REAL NOT NULL,
-            upi_id TEXT,
-            status TEXT NOT NULL,
-            created_at REAL NOT NULL,
-            FOREIGN KEY (order_id) REFERENCES orders(order_id)
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS webhook_events (
-            event_id TEXT PRIMARY KEY,
-            order_id TEXT,
-            payment_id TEXT,
-            event_type TEXT NOT NULL,
-            payload_json TEXT,
-            signature TEXT,
-            delivery_status TEXT NOT NULL,
-            attempt INTEGER NOT NULL DEFAULT 1,
-            created_at REAL NOT NULL
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-init_db()
-
-
-def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def create_order_record(order_id, merchant_id, merchant_name, amount_expected, upi_uri, expires_in=300):
-    created_at = time.time()
-    expires_at = created_at + int(expires_in)
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('''
-        INSERT INTO orders (order_id, merchant_id, merchant_name, amount_expected, upi_uri, status, created_at, expires_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (order_id, merchant_id, merchant_name, float(amount_expected), upi_uri, 'created', created_at, expires_at))
-    conn.commit()
-    conn.close()
-    return created_at, expires_at
-
-
-def get_order_record(order_id):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('SELECT * FROM orders WHERE order_id = ?', (order_id,))
-    row = c.fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-
-def update_order_status(order_id, status):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('UPDATE orders SET status = ? WHERE order_id = ?', (status, order_id))
-    conn.commit()
-    conn.close()
-
-
-def create_payment_record(payment_id, order_id, amount_paid, upi_id, status):
-    created_at = time.time()
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('''
-        INSERT INTO payments (payment_id, order_id, amount_paid, upi_id, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-    ''', (payment_id, order_id, float(amount_paid), upi_id, status, created_at))
-    conn.commit()
-    conn.close()
-    return created_at
-
-
-def get_latest_payment_for_order(order_id):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('SELECT * FROM payments WHERE order_id = ? ORDER BY created_at DESC LIMIT 1', (order_id,))
-    row = c.fetchone()
-    conn.close()
-    return dict(row) if row else None
+# Initialize ML fraud detector
+fraud_detector = FraudDetector()
 
 
 def create_webhook_signature(payload_text):
@@ -196,31 +96,6 @@ def create_webhook_signature(payload_text):
         payload_text.encode(),
         hashlib.sha256
     ).hexdigest()
-
-
-def log_webhook_event(event_id, order_id, payment_id, event_type, payload_json, signature, delivery_status, attempt=1):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('''
-        INSERT OR REPLACE INTO webhook_events (event_id, order_id, payment_id, event_type, payload_json, signature, delivery_status, attempt, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (event_id, order_id, payment_id, event_type, json.dumps(payload_json), signature, delivery_status, int(attempt), time.time()))
-    conn.commit()
-    conn.close()
-
-
-def log_audit_event(merchant_id, action, amount=0.0, upi_id="", status="INFO", details=""):
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute('''
-            INSERT INTO audit_log (timestamp, merchant_id, action, amount, upi_id, status, details)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (time.time(), merchant_id, action, amount, upi_id, status, json.dumps(details)))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Audit log error: {e}")
 
 
 def is_live_configured():
@@ -346,6 +221,93 @@ def create_demo_qr_response(amount, amount_paise, merchant_id, merchant_name):
 
 
 # ─────────────────────────────────────────────
+# AUTH ROUTES
+# ─────────────────────────────────────────────
+
+@app.route('/api/auth/register', methods=['POST'])
+def auth_register():
+    data = request.json or {}
+    name = str(data.get('name', '')).strip()
+    email = str(data.get('email', '')).strip().lower()
+    password = str(data.get('password', '')).strip()
+
+    if not name or not email or not password:
+        return jsonify({'error': 'Name, email, and password are required'}), 400
+    if len(password) < 6:
+        return jsonify({'error': 'Password must be at least 6 characters'}), 400
+    if '@' not in email:
+        return jsonify({'error': 'Invalid email address'}), 400
+
+    existing = get_merchant_by_email(email)
+    if existing:
+        return jsonify({'error': 'Email already registered'}), 409
+
+    merchant_id = generate_merchant_id()
+    password_hash = hash_password(password)
+    api_key = generate_api_key()
+
+    create_merchant(merchant_id, name, email, password_hash, api_key)
+    token = generate_token(merchant_id, name, email)
+
+    log_audit_event(merchant_id, "MERCHANT_REGISTERED", 0.0, "", "SUCCESS", {"email": email})
+
+    return jsonify({
+        'success': True,
+        'token': token,
+        'merchant_id': merchant_id,
+        'merchant_name': name,
+        'api_key': api_key,
+    })
+
+
+@app.route('/api/auth/login', methods=['POST'])
+def auth_login():
+    data = request.json or {}
+    email = str(data.get('email', '')).strip().lower()
+    password = str(data.get('password', '')).strip()
+
+    if not email or not password:
+        return jsonify({'error': 'Email and password are required'}), 400
+
+    merchant = get_merchant_by_email(email)
+    if not merchant or not check_password(password, merchant['password_hash']):
+        return jsonify({'error': 'Invalid email or password'}), 401
+
+    token = generate_token(merchant['merchant_id'], merchant['name'], merchant['email'])
+
+    return jsonify({
+        'success': True,
+        'token': token,
+        'merchant_id': merchant['merchant_id'],
+        'merchant_name': merchant['name'],
+    })
+
+
+@app.route('/api/auth/me', methods=['GET'])
+@require_auth
+def auth_me():
+    merchant = get_merchant_by_id(g.merchant_id)
+    if not merchant:
+        return jsonify({'error': 'Merchant not found'}), 404
+    return jsonify({
+        'success': True,
+        'merchant_id': merchant['merchant_id'],
+        'name': merchant['name'],
+        'email': merchant['email'],
+        'api_key': merchant['api_key'],
+        'created_at': merchant['created_at'],
+    })
+
+
+@app.route('/api/auth/regenerate-api-key', methods=['POST'])
+@require_auth
+def auth_regenerate_key():
+    new_key = generate_api_key()
+    update_merchant_api_key(g.merchant_id, new_key)
+    return jsonify({'success': True, 'api_key': new_key})
+
+
+# ─────────────────────────────────────────────
 # ROUTES
 # ─────────────────────────────────────────────
 
@@ -360,11 +322,12 @@ def terminal():
 
 
 @app.route('/api/orders', methods=['POST'])
+@require_auth
 def create_order():
     data = request.json or {}
     amount = data.get('amount')
-    merchant_id = str(data.get('merchant_id', 'default_merchant')).strip()
-    merchant_name = str(data.get('merchant_name', 'Merchant')).strip()
+    merchant_id = g.merchant_id
+    merchant_name = g.merchant_name
 
     try:
         amount_value = float(amount)
@@ -425,10 +388,13 @@ def create_order():
 
 
 @app.route('/api/orders/<order_id>', methods=['GET'])
+@require_auth
 def get_order(order_id):
     order = get_order_record(order_id)
     if not order:
         return jsonify({'error': 'Order not found'}), 404
+    if order.get('merchant_id') != g.merchant_id:
+        return jsonify({'error': 'Forbidden'}), 403
 
     payment = get_latest_payment_for_order(order_id)
     return jsonify({
@@ -530,12 +496,13 @@ def mock_gateway_pay():
 
 
 @app.route('/api/create-qr', methods=['POST'])
+@require_auth
 def create_qr():
     """Merchant enters amount and app creates a locked QR."""
     data = request.json or {}
     amount = data.get('amount')
-    merchant_id = data.get('merchant_id', 'default_merchant')
-    merchant_name = data.get('merchant_name', 'Merchant')
+    merchant_id = g.merchant_id
+    merchant_name = g.merchant_name
     mode = str(data.get('mode', PAYMENT_MODE_DEFAULT)).strip().lower()
 
     if not amount or amount <= 0:
@@ -573,11 +540,10 @@ def create_qr():
             'mode': 'upi_direct'
         }
 
-        pending_payments["latest"] = {
+        pending_payments[merchant_id] = {
             "amount": float(amount),
             "time": datetime.now().isoformat(),
             "qr_id": order_id,
-            "merchant_id": merchant_id
         }
         print(f"\n[SMS MODE] New payment expected: Rs {float(amount):.2f} | QR: {order_id}\n")
 
@@ -755,11 +721,12 @@ def parse_upi_ref(sms):
 
 
 @app.route("/sms-webhook", methods=["POST"])
+@require_api_key
 def sms_webhook():
     try:
         data = request.json or {}
         sms = (data.get("message") or data.get("body") or data.get("sms") or "").strip()
-        print(f"\n[SMS WEBHOOK] SMS RECEIVED: {sms}\n")
+        print(f"\n[SMS WEBHOOK] SMS RECEIVED from merchant {g.merchant_id}: {sms}\n")
 
         amount = parse_upi_amount(sms)
         ref = parse_upi_ref(sms)
@@ -768,7 +735,7 @@ def sms_webhook():
             print("[SMS WEBHOOK] Not a UPI credit SMS, ignoring.")
             return jsonify({"status": "ignored"}), 200
 
-        expected_entry = pending_payments.get("latest", {})
+        expected_entry = pending_payments.get(g.merchant_id, {})
         expected = expected_entry.get("amount")
 
         if expected is None:
@@ -789,7 +756,7 @@ def sms_webhook():
             upi_id=f"sms_ref_{ref}",
             transaction_id=str(ref)
         )
-        pending_payments.pop("latest", None)
+        pending_payments.pop(g.merchant_id, None)
 
         return jsonify({"status": "ok", "amount": amount, "transaction_ref": ref}), 200
 
@@ -826,20 +793,29 @@ def simulate_payment():
     if paid_amount < 2.0 or paid_amount in [1.0, 0.5, 0.01]:
         fraud_reasons.append("Unusual Attempt Value")
 
-    if upi_id not in upi_history:
-        upi_history[upi_id] = deque(maxlen=10)
-
-    while upi_history[upi_id] and now - upi_history[upi_id][0] > 120:
-        upi_history[upi_id].popleft()
-
-    if len(upi_history[upi_id]) >= 2:
+    hist = upi_history(upi_id)
+    if hist.count_in_window(now) >= 2:
         fraud_reasons.append("High Frequency (Suspected Bot)")
         blocked_upi_ids.add(upi_id)
 
-    upi_history[upi_id].append(now)
+    hist.add(now)
 
     if paid_paise != expected_paise:
         fraud_reasons.append(f"Amount Mismatch Expected Rs {session['expected_amount_rupees']:.0f}, Got Rs {paid_amount:.0f}")
+
+    # --- ML Risk Scoring ---
+    ml_result = fraud_detector.predict(
+        paid_amount=paid_amount,
+        expected_amount=session['expected_amount_rupees'],
+        upi_id=upi_id,
+        merchant_id=merchant_id,
+    )
+    risk_score = ml_result.get("risk_score", 50)
+    ml_verdict = ml_result.get("ml_verdict", "unknown")
+
+    # Hybrid decision: rules are hard gates, ML adds soft scoring
+    if risk_score >= 70 and not fraud_reasons:
+        fraud_reasons.append(f"ML Risk Score: {risk_score}/100 ({ml_verdict})")
 
     if not fraud_reasons:
         result = {
@@ -847,10 +823,14 @@ def simulate_payment():
             'paid': paid_amount,
             'expected': session['expected_amount_rupees'],
             'upi_id': upi_id,
-            'message': f"Rs {paid_amount:.0f} Received"
+            'message': f"Rs {paid_amount:.0f} Received",
+            'risk_score': risk_score,
+            'ml_verdict': ml_verdict,
         }
         session['status'] = 'paid'
-        log_audit_event(merchant_id, "PAYMENT_RECEIVED", paid_amount, upi_id, "SUCCESS")
+        fraud_detector.update_after_decision(upi_id, merchant_id, is_fraud=False)
+        log_audit_event(merchant_id, "PAYMENT_RECEIVED", paid_amount, upi_id, "SUCCESS",
+                        {"risk_score": risk_score, "ml_verdict": ml_verdict})
     else:
         result = {
             'status': 'MISMATCH',
@@ -858,11 +838,15 @@ def simulate_payment():
             'expected': session['expected_amount_rupees'],
             'upi_id': upi_id,
             'message': f"FRAUD ALERT! {' | '.join(fraud_reasons)}",
-            'fraud_reasons': fraud_reasons
+            'fraud_reasons': fraud_reasons,
+            'risk_score': risk_score,
+            'ml_verdict': ml_verdict,
         }
         session['status'] = 'mismatch'
+        fraud_detector.update_after_decision(upi_id, merchant_id, is_fraud=True)
         log_audit_event(merchant_id, "FRAUD_FLAGGED", paid_amount, upi_id, "SUSPICIOUS",
-                       {"reasons": fraud_reasons, "expected": session['expected_amount_rupees']})
+                       {"reasons": fraud_reasons, "expected": session['expected_amount_rupees'],
+                        "risk_score": risk_score, "ml_verdict": ml_verdict})
 
     socketio.emit('payment_result', result, room=merchant_id)
 
@@ -871,9 +855,7 @@ def simulate_payment():
     result_copy['transaction_id'] = f"demo_txn_{int(time.time())}"
     result_copy['qr_id'] = qr_id
 
-    if merchant_id not in transaction_history:
-        transaction_history[merchant_id] = []
-    transaction_history[merchant_id].append(result_copy)
+    transaction_history(merchant_id).append(result_copy)
 
     return jsonify({'success': True, 'result': result_copy})
 
@@ -895,20 +877,29 @@ def apply_payment_result(session, paid_amount_rupees, upi_id, transaction_id, so
         if paid_amount_rupees < 2.0 or paid_amount_rupees in [1.0, 0.5, 0.01]:
             fraud_reasons.append("Unusual Attempt Value")
 
-        if upi_id not in upi_history:
-            upi_history[upi_id] = deque(maxlen=10)
-
-        while upi_history[upi_id] and now - upi_history[upi_id][0] > 120:
-            upi_history[upi_id].popleft()
-
-        if len(upi_history[upi_id]) >= 2:
+        hist = upi_history(upi_id)
+        if hist.count_in_window(now) >= 2:
             fraud_reasons.append("High Frequency (Suspected Bot)")
             blocked_upi_ids.add(upi_id)
 
-        upi_history[upi_id].append(now)
+        hist.add(now)
 
     if paid_paise != expected_paise:
         fraud_reasons.append(f"Amount Mismatch: Expected Rs {expected_rupees:.0f}, Got Rs {paid_amount_rupees:.0f}")
+
+    # --- ML Risk Scoring ---
+    ml_result = fraud_detector.predict(
+        paid_amount=paid_amount_rupees,
+        expected_amount=expected_rupees,
+        upi_id=upi_id,
+        merchant_id=merchant_id,
+    )
+    risk_score = ml_result.get("risk_score", 50)
+    ml_verdict = ml_result.get("ml_verdict", "unknown")
+
+    # Hybrid decision: rules are hard gates, ML adds soft scoring
+    if risk_score >= 70 and not fraud_reasons:
+        fraud_reasons.append(f"ML Risk Score: {risk_score}/100 ({ml_verdict})")
 
     if not fraud_reasons:
         result = {
@@ -918,10 +909,14 @@ def apply_payment_result(session, paid_amount_rupees, upi_id, transaction_id, so
             'upi_id': upi_id,
             'message': f"Rs {paid_amount_rupees:.0f} Received",
             'transaction_id': transaction_id,
-            'timestamp': time.time()
+            'timestamp': time.time(),
+            'risk_score': risk_score,
+            'ml_verdict': ml_verdict,
         }
         session['status'] = 'paid'
-        log_audit_event(merchant_id, "PAYMENT_RECEIVED", paid_amount_rupees, upi_id, "SUCCESS")
+        fraud_detector.update_after_decision(upi_id, merchant_id, is_fraud=False)
+        log_audit_event(merchant_id, "PAYMENT_RECEIVED", paid_amount_rupees, upi_id, "SUCCESS",
+                        {"risk_score": risk_score, "ml_verdict": ml_verdict})
     else:
         result = {
             'status': 'MISMATCH',
@@ -931,14 +926,17 @@ def apply_payment_result(session, paid_amount_rupees, upi_id, transaction_id, so
             'message': f"FRAUD ALERT! {' | '.join(fraud_reasons)}",
             'fraud_reasons': fraud_reasons,
             'transaction_id': transaction_id,
-            'timestamp': time.time()
+            'timestamp': time.time(),
+            'risk_score': risk_score,
+            'ml_verdict': ml_verdict,
         }
         session['status'] = 'mismatch'
-        log_audit_event(merchant_id, "FRAUD_FLAGGED", paid_amount_rupees, upi_id, "SUSPICIOUS", {"reasons": fraud_reasons, "expected": expected_rupees})
+        fraud_detector.update_after_decision(upi_id, merchant_id, is_fraud=True)
+        log_audit_event(merchant_id, "FRAUD_FLAGGED", paid_amount_rupees, upi_id, "SUSPICIOUS",
+                       {"reasons": fraud_reasons, "expected": expected_rupees,
+                        "risk_score": risk_score, "ml_verdict": ml_verdict})
 
-    if merchant_id not in transaction_history:
-        transaction_history[merchant_id] = []
-    transaction_history[merchant_id].append(result)
+    transaction_history(merchant_id).append(result)
 
     socketio.emit('payment_result', result, room=merchant_id)
     return result
@@ -1120,76 +1118,42 @@ def webhook_live():
 
     return jsonify({'success': True, 'status': session.get('status', 'pending')})
 @app.route('/api/session/<qr_id>', methods=['GET'])
+@require_auth
 def get_session(qr_id):
     """Polling fallback if WebSocket drops"""
     session = qr_sessions.get(qr_id)
     if not session:
         return jsonify({'error': 'Not found'}), 404
+    if session.get('merchant_id') != g.merchant_id:
+        return jsonify({'error': 'Forbidden'}), 403
     return jsonify(session)
 
 
 @app.route('/api/history', methods=['GET'])
+@require_auth
 def get_history():
-    merchant_id = request.args.get('merchant_id')
-    if not merchant_id:
-        return jsonify({'error': 'merchant_id required'}), 400
-    history = transaction_history.get(merchant_id, [])
+    history = transaction_history(g.merchant_id).to_list()
     return jsonify({'success': True, 'history': history[-50:]})
 
 
 @app.route('/api/audit-logs', methods=['GET'])
+@require_auth
 def get_audit_logs():
-    merchant_id = request.args.get('merchant_id')
-    if not merchant_id:
-        return jsonify({'error': 'merchant_id required'}), 400
-
     action_filter = request.args.get('action')
     status_filter = request.args.get('status')
 
-    query = "SELECT timestamp, action, amount, upi_id, status, details FROM audit_log WHERE merchant_id = ?"
-    params = [merchant_id]
-
-    if action_filter and action_filter != 'ALL':
-        query += " AND action = ?"
-        params.append(action_filter)
-
-    if status_filter and status_filter != 'ALL':
-        query += " AND status = ?"
-        params.append(status_filter)
-
-    query += " ORDER BY timestamp DESC LIMIT 100"
-
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-        c.execute(query, params)
-        rows = c.fetchall()
-
-        logs = []
-        for row in rows:
-            logs.append({
-                'timestamp': row['timestamp'],
-                'action': row['action'],
-                'amount': row['amount'],
-                'upi_id': row['upi_id'],
-                'status': row['status'],
-                'details': json.loads(row['details']) if row['details'] else {}
-            })
-        conn.close()
+        from db import get_audit_logs as db_get_audit_logs
+        logs = db_get_audit_logs(g.merchant_id, action_filter, status_filter)
         return jsonify({'success': True, 'logs': logs})
-
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/api/analytics', methods=['GET'])
+@require_auth
 def get_analytics():
-    merchant_id = request.args.get('merchant_id')
-    if not merchant_id:
-        return jsonify({'error': 'merchant_id required'}), 400
-
-    history = transaction_history.get(merchant_id, [])
+    history = transaction_history(g.merchant_id).to_list()
 
     total_txns = len(history)
     success_count = sum(1 for t in history if t.get('status') == 'SUCCESS')
@@ -1234,10 +1198,13 @@ def get_analytics():
 
 
 @app.route('/api/receipt/<qr_id>', methods=['GET'])
+@require_auth
 def get_receipt(qr_id):
     session = qr_sessions.get(qr_id)
     if not session or session.get('status') != 'paid':
         return "Receipt not found or payment not completed.", 404
+    if session.get('merchant_id') != g.merchant_id:
+        return "Forbidden", 403
 
     paid_amount = session['expected_amount_rupees']
     merchant_name = session['merchant_name']
@@ -1289,6 +1256,30 @@ def get_receipt(qr_id):
 
 
 # ─────────────────────────────────────────────
+# ML MODEL ENDPOINTS
+# ─────────────────────────────────────────────
+
+@app.route('/api/model-status', methods=['GET'])
+def model_status():
+    """Returns ML model metadata and performance metrics."""
+    return jsonify(fraud_detector.get_status())
+
+
+@app.route('/api/retrain-model', methods=['POST'])
+@require_auth
+def retrain_model():
+    """Retrain the ML model with synthetic + any available real data."""
+    try:
+        metadata = fraud_detector.retrain()
+        return jsonify({
+            'success': True,
+            'metadata': metadata,
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ─────────────────────────────────────────────
 # WEBSOCKET EVENTS
 # ─────────────────────────────────────────────
 
@@ -1302,8 +1293,9 @@ def manual_verify():
     data = request.json or {}
     amount = float(data.get('amount', 0))
     ref = data.get('ref', 'MANUAL-REF')
+    merchant_id = data.get('merchant_id', 'default_merchant')
 
-    expected_entry = pending_payments.get('latest', {})
+    expected_entry = pending_payments.get(merchant_id, {})
     expected = expected_entry.get('amount')
     qr_id = expected_entry.get('qr_id', '')
 
@@ -1313,7 +1305,7 @@ def manual_verify():
     session = qr_sessions.get(qr_id)
     if not session:
         session = {
-            'merchant_id': 'default_merchant',
+            'merchant_id': merchant_id,
             'merchant_name': 'Merchant',
             'expected_amount': int(expected * 100),
             'expected_amount_rupees': float(expected),
@@ -1332,15 +1324,21 @@ def manual_verify():
         source="manual_confirm"
     )
 
-    pending_payments.pop('latest', None)
+    pending_payments.pop(merchant_id, None)
     return jsonify({'status': result.get('status'), 'message': result.get('message')})
 
 
 @socketio.on('join')
 def on_join(data):
-    merchant_id = data.get('merchant_id', 'default_merchant')
+    from auth import decode_token
+    token = data.get('token', '')
+    payload = decode_token(token)
+    if not payload:
+        emit('error', {'message': 'Invalid or missing token'})
+        return
+    merchant_id = payload['merchant_id']
     join_room(merchant_id)
-    emit('joined', {'room': merchant_id})
+    emit('joined', {'room': merchant_id, 'merchant_id': merchant_id})
 
 
 if __name__ == "__main__":

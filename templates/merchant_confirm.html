@@ -173,6 +173,10 @@ async function sendVerify(type) {
     const ref = document.getElementById('ref').value || 'MANUAL-REF';
     const resultEl = document.getElementById('result');
 
+    // Get merchant_id from URL params or localStorage
+    const params = new URLSearchParams(window.location.search);
+    const merchantId = params.get('merchant_id') || localStorage.getItem('upiguard_merchant_id') || 'default_merchant';
+
     if (!amountInput) {
         resultEl.className = 'error';
         resultEl.innerText = 'Please enter the amount first';
@@ -190,7 +194,7 @@ async function sendVerify(type) {
         const res = await fetch('/api/manual-verify', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ amount, ref })
+            body: JSON.stringify({ amount, ref, merchant_id: merchantId })
         });
 
         const data = await res.json();

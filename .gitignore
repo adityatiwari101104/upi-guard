@@ -4,3 +4,8 @@ __pycache__/
 .env
 .DS_Store
 *.db
+*.db-journal
+ml_models/*.pkl
+*.log
+app_test.err.log
+app_test.out.log
