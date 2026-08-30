@@ -315,7 +315,7 @@ def auth_regenerate_key():
 
 @app.route('/')
 def landing():
-    return render_template('index.html')
+    return render_template('terminal.html')
 
 
 @app.route('/terminal')
