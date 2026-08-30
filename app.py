@@ -230,6 +230,7 @@ def auth_register():
     name = str(data.get('name', '')).strip()
     email = str(data.get('email', '')).strip().lower()
     password = str(data.get('password', '')).strip()
+    upi_vpa = str(data.get('upi_vpa', '')).strip()
 
     if not name or not email or not password:
         return jsonify({'error': 'Name, email, and password are required'}), 400
@@ -246,7 +247,7 @@ def auth_register():
     password_hash = hash_password(password)
     api_key = generate_api_key()
 
-    create_merchant(merchant_id, name, email, password_hash, api_key)
+    create_merchant(merchant_id, name, email, password_hash, api_key, upi_vpa)
     token = generate_token(merchant_id, name, email)
 
     log_audit_event(merchant_id, "MERCHANT_REGISTERED", 0.0, "", "SUCCESS", {"email": email})
@@ -295,6 +296,7 @@ def auth_me():
         'name': merchant['name'],
         'email': merchant['email'],
         'api_key': merchant['api_key'],
+        'upi_vpa': merchant.get('upi_vpa', ''),
         'created_at': merchant['created_at'],
     })
 
@@ -337,12 +339,15 @@ def create_order():
     if amount_value <= 0:
         return jsonify({'error': 'Invalid amount'}), 400
 
-    if not MERCHANT_UPI_VPA:
-        return jsonify({'error': 'MERCHANT_UPI_VPA is not configured in .env'}), 400
+    # Use merchant's own VPA, fall back to global VPA
+    merchant_record = get_merchant_by_id(merchant_id)
+    merchant_vpa = (merchant_record.get('upi_vpa') if merchant_record else None) or MERCHANT_UPI_VPA
+    if not merchant_vpa:
+        return jsonify({'error': 'No UPI VPA configured'}), 400
 
     order_id = f"order_{merchant_id}_{int(time.time())}"
     upi_uri, img_b64 = generate_upi_qr(
-        upi_vpa=MERCHANT_UPI_VPA,
+        upi_vpa=merchant_vpa,
         merchant_name=merchant_name,
         amount=f"{amount_value:.2f}",
         txn_ref=order_id
@@ -517,12 +522,15 @@ def create_qr():
         return create_demo_qr_response(amount, amount_paise, merchant_id, merchant_name)
 
     if mode == 'upi_direct':
-        if not MERCHANT_UPI_VPA:
-            return jsonify({'error': 'MERCHANT_UPI_VPA is not configured in .env'}), 400
+        # Use merchant's own VPA, fall back to global VPA
+        merchant = get_merchant_by_id(g.merchant_id)
+        merchant_vpa = (merchant.get('upi_vpa') if merchant else None) or MERCHANT_UPI_VPA
+        if not merchant_vpa:
+            return jsonify({'error': 'No UPI VPA configured. Set your UPI VPA in account settings.'}), 400
 
         order_id = f"upi_direct_{int(time.time())}"
         upi_uri, img_b64 = generate_upi_qr(
-            upi_vpa=MERCHANT_UPI_VPA,
+            upi_vpa=merchant_vpa,
             merchant_name=merchant_name,
             amount=f"{float(amount):.2f}",
             txn_ref=order_id

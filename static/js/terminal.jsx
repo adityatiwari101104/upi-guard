@@ -66,6 +66,7 @@ function App() {
   const [authName, setAuthName] = useState("");
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
+  const [authUpiVpa, setAuthUpiVpa] = useState("");
   const [authError, setAuthError] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
 
@@ -664,7 +665,7 @@ function App() {
     try {
       const endpoint = authMode === "register" ? "/api/auth/register" : "/api/auth/login";
       const body = authMode === "register"
-        ? { name: authName, email: authEmail, password: authPassword }
+        ? { name: authName, email: authEmail, password: authPassword, upi_vpa: authUpiVpa }
         : { email: authEmail, password: authPassword };
 
       const res = await fetch(endpoint, {
@@ -689,6 +690,7 @@ function App() {
       setAuthName("");
       setAuthEmail("");
       setAuthPassword("");
+      setAuthUpiVpa("");
     } catch (err) {
       setAuthError("Could not reach server");
     } finally {
@@ -1246,6 +1248,9 @@ function App() {
             <p>{authMode === "register" ? "Register to start accepting payments." : "Login to your merchant account."}</p>
             {authMode === "register" && (
               <input className="modal-input" value={authName} onChange={(e) => setAuthName(e.target.value)} placeholder="Business Name" autoComplete="off" style={{marginBottom: 10}} />
+            )}
+            {authMode === "register" && (
+              <input className="modal-input" value={authUpiVpa} onChange={(e) => setAuthUpiVpa(e.target.value)} placeholder="UPI ID (e.g. yourname@okbi)" autoComplete="off" style={{marginBottom: 10}} />
             )}
             <input className="modal-input" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} placeholder="Email" type="email" autoComplete="off" style={{marginBottom: 10}} />
             <input className="modal-input" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} placeholder="Password (min 6 chars)" type="password" autoComplete="off" onKeyDown={(e) => { if (e.key === "Enter") onAuthSubmit(); }} />

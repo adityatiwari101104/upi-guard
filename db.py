@@ -21,6 +21,9 @@ def _get_pool():
     global _pool
     if _pool is None:
         dsn = os.getenv("DATABASE_URL", "postgresql://upiguard:upiguard@localhost:5432/upiguard")
+        # Railway gives postgres:// but psycopg2 needs postgresql://
+        if dsn.startswith("postgres://"):
+            dsn = dsn.replace("postgres://", "postgresql://", 1)
         _pool = psycopg2.pool.ThreadedConnectionPool(
             minconn=2,
             maxconn=10,
@@ -103,6 +106,7 @@ def init_db():
                 email TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 api_key TEXT UNIQUE,
+                upi_vpa TEXT,
                 created_at DOUBLE PRECISION NOT NULL
             )
         ''')
@@ -118,6 +122,14 @@ def init_db():
         ''')
         conn.commit()
         print("[DB] PostgreSQL tables created/verified")
+
+        # Migration: add upi_vpa column if missing
+        try:
+            cur2 = conn.cursor()
+            cur2.execute("ALTER TABLE merchants ADD COLUMN IF NOT EXISTS upi_vpa TEXT")
+            conn.commit()
+        except Exception:
+            pass  # column already exists or table doesn't exist yet
     except Exception as e:
         conn.rollback()
         print(f"[DB] Table creation error: {e}")
@@ -294,15 +306,15 @@ def get_audit_logs(merchant_id, action_filter=None, status_filter=None):
 # MERCHANT / AUTH OPERATIONS
 # ─────────────────────────────────────────────
 
-def create_merchant(merchant_id, name, email, password_hash, api_key):
+def create_merchant(merchant_id, name, email, password_hash, api_key, upi_vpa=""):
     """Insert a new merchant record."""
     conn = get_db_connection()
     try:
         cur = conn.cursor()
         cur.execute('''
-            INSERT INTO merchants (merchant_id, name, email, password_hash, api_key, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        ''', (merchant_id, name, email, password_hash, api_key, time.time()))
+            INSERT INTO merchants (merchant_id, name, email, password_hash, api_key, upi_vpa, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ''', (merchant_id, name, email, password_hash, api_key, upi_vpa, time.time()))
         conn.commit()
     except Exception as e:
         conn.rollback()
