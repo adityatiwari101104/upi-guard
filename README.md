@@ -5,13 +5,14 @@ Protects shopkeepers from UPI fraud by generating amount-locked QR codes, auto-v
 ## How It Works
 
 ```
-1. Merchant enters bill amount on terminal
-2. App generates fixed-amount UPI QR code
-3. Customer scans QR and pays via UPI
-4. Android app intercepts bank SMS notification
-5. SMS forwarded to backend → amount + ref parsed
-6. ML fraud detection runs (rules + model)
-7. Terminal flashes GREEN (success) or RED (fraud)
+1. Merchant registers with email + UPI VPA
+2. Enters bill amount on terminal
+3. App generates fixed-amount UPI QR code
+4. Customer scans QR and pays via UPI
+5. Android app intercepts bank SMS notification
+6. SMS forwarded to backend → amount + ref parsed
+7. ML fraud detection runs (rules + model)
+8. Terminal flashes GREEN (success) or RED (fraud)
 ```
 
 ## Quick Start (Docker)
@@ -29,6 +30,15 @@ open http://localhost:5000
 ```
 
 This starts 5 services: Flask API, PostgreSQL, Redis, Celery worker, and Celery beat.
+
+## Deploy to Railway
+
+1. Push code to GitHub
+2. Connect GitHub repo to Railway
+3. Add PostgreSQL service (auto-sets DATABASE_URL)
+4. Set REDIS_URL to Upstash Redis URL
+5. Set env vars: JWT_SECRET, SECRET_KEY, PAYMENT_MODE_DEFAULT=upi_direct
+6. App auto-deploys with public HTTPS URL
 
 ## Architecture
 
@@ -53,12 +63,10 @@ This starts 5 services: Flask API, PostgreSQL, Redis, Celery worker, and Celery 
 
 ## Features
 
-### Payment Modes
-- **UPI Direct** — Real UPI QR with merchant VPA, verified via SMS
-- **Demo** — Local simulation for testing
-- **Mock** — Simulated gateway webhook flow
-- **Razorpay Test** — Razorpay test environment
-- **Live** — PhonePe checkout integration
+### UPI Direct Payment
+- Real UPI QR with merchant's own VPA (linked to their bank account)
+- Each merchant registers with their own UPI ID
+- Payments go directly to merchant's bank — no gateway needed
 
 ### ML Fraud Detection (Hybrid)
 - **Rule-based checks**: blocked UPI IDs, unusual amounts, velocity abuse, amount mismatch
@@ -82,8 +90,7 @@ This starts 5 services: Flask API, PostgreSQL, Redis, Celery worker, and Celery 
 ### Public
 | Endpoint | Method | Description |
 |---|---|---|
-| `/` | GET | Landing page |
-| `/terminal` | GET | Merchant terminal |
+| `/` | GET | Merchant terminal |
 | `/api/auth/register` | POST | Register new merchant |
 | `/api/auth/login` | POST | Login, returns JWT |
 | `/api/model-status` | GET | ML model metadata |
@@ -113,7 +120,7 @@ This starts 5 services: Flask API, PostgreSQL, Redis, Celery worker, and Celery 
 ### Webhook (Signature Verified)
 | Endpoint | Method | Description |
 |---|---|---|
-| `/webhook` | POST | Live Razorpay webhook |
+| `/webhook` | POST | Razorpay webhook |
 | `/webhook/razorpay-mock` | POST | Mock Razorpay webhook |
 
 ## Tech Stack
@@ -122,13 +129,14 @@ This starts 5 services: Flask API, PostgreSQL, Redis, Celery worker, and Celery 
 |---|---|
 | Backend | Flask + Socket.IO (gthread workers) |
 | Database | PostgreSQL 15 |
-| Cache/Sessions | Redis 7 |
+| Cache/Sessions | Redis (Upstash) |
 | Background Tasks | Celery + Redis |
 | ML | scikit-learn (Isolation Forest + Gradient Boosting) |
 | Auth | JWT (PyJWT) + bcrypt |
 | Frontend | React (Babel standalone) + Chart.js |
 | QR Generation | segno |
 | Containerization | Docker Compose |
+| Deployment | Railway |
 
 ## Project Structure
 
@@ -145,9 +153,8 @@ upi-guard/
 ├── ml_models/              # Trained model files
 ├── static/
 │   ├── js/terminal.jsx     # React terminal UI
-│   └── css/                # Stylesheets
+│   └── css/terminal.css    # Styles
 ├── templates/
-│   ├── index.html          # Landing page
 │   ├── terminal.html       # Terminal shell
 │   └── merchant_confirm.html  # Manual payment confirmation
 ├── docker-compose.yml      # 5-service infrastructure
@@ -164,19 +171,12 @@ upi-guard/
 | `JWT_SECRET` | Yes | JWT signing secret |
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
 | `REDIS_URL` | Yes | Redis connection string |
-| `PAYMENT_MODE_DEFAULT` | No | Default mode: `demo`, `upi_direct`, `live`, `razorpay_test` |
-| `MERCHANT_UPI_VPA` | For UPI Direct | Merchant's UPI VPA |
-| `RAZORPAY_KEY_ID` | For Razorpay | Razorpay test/live key |
-| `RAZORPAY_KEY_SECRET` | For Razorpay | Razorpay secret |
-| `PHONEPE_CLIENT_ID` | For Live | PhonePe client ID |
-| `PHONEPE_CLIENT_SECRET` | For Live | PhonePe client secret |
+| `PAYMENT_MODE_DEFAULT` | No | Default: `upi_direct` |
+| `MERCHANT_UPI_VPA` | No | Global fallback UPI VPA |
 
 ## Development
 
 ```bash
-# Start only infrastructure (no app)
-docker-compose up -d db redis
-
 # Run app locally
 pip install -r requirements.txt
 python app.py
@@ -184,13 +184,13 @@ python app.py
 # Train/retrain ML model
 python train_fraud_model.py
 
-# Run Celery worker locally
+# Run Celery worker
 celery -A celery_app worker --loglevel=info
 
-# Run Celery beat locally
+# Run Celery beat
 celery -A celery_app beat --loglevel=info
 ```
 
 ## License
 
-Academic project — UPI Guard.
+UPI Guard — Built to protect Indian shopkeepers from UPI fraud.
