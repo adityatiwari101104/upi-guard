@@ -216,21 +216,29 @@ def create_store(redis_url=None):
     Returns a dict with keys: qr_sessions, pending_payments,
     transaction_history_fn, upi_history_fn, blocked_upi_ids.
     """
-    url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    raw_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    url = redis_url or raw_url
+    print(f"[Redis] Raw URL: {url[:80]}")
     # Handle various Redis URL formats
     if url and not url.startswith(("redis://", "rediss://", "unix://")):
-        if "upstash.io" in url or ":6379" in url:
-            url = f"rediss://{url}" if "upstash.io" in url else f"redis://{url}"
-        else:
-            url = f"redis://{url}"
+        # Upstash uses SSL, everything else likely plain redis
+        url = f"rediss://{url}"
+        print(f"[Redis] Added rediss:// prefix: {url[:80]}")
+    if not url:
+        url = "redis://localhost:6379/0"
     print(f"[Redis] Client configured for {url[:60]}... (lazy connect)")
-    client = redis.from_url(
-        url,
-        decode_responses=False,
-        socket_connect_timeout=5,
-        socket_timeout=5,
-        retry_on_timeout=True,
-    )
+    try:
+        client = redis.from_url(
+            url,
+            decode_responses=False,
+            socket_connect_timeout=5,
+            socket_timeout=5,
+            retry_on_timeout=True,
+        )
+    except Exception as e:
+        print(f"[Redis] WARNING: Could not create client: {e}")
+        print(f"[Redis] Falling back to localhost")
+        client = redis.from_url("redis://localhost:6379/0", decode_responses=False)
 
     qr_sessions = RedisDict(client, "upiguard:qr_sessions")
     pending_payments = RedisDict(client, "upiguard:pending_payments")
